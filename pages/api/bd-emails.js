@@ -9,41 +9,24 @@ const MS_ACCESS_TOKEN = process.env.MS_ACCESS_TOKEN;
 // Fetch proposals from Socket API
 async function fetchSocketProposals() {
   try {
-    const response = await fetch("https://api.socketsoftware.com/graphql", {
-      method: "POST",
+    const response = await fetch("https://app.usesocket.com/api/v1/proposals", {
+      method: "GET",
       headers: {
         "Authorization": `Bearer ${SOCKET_API_KEY}`,
-        "Content-Type": "application/json",
+      "Accept": "application/json",
       },
-      body: JSON.stringify({
-        query: `
-          query {
-            proposals(first: 50, orderBy: {field: "created_at", direction: DESC}) {
-              edges {
-                node {
-                  id
-                  title
-                  clientName
-                  status
-                  value
-                  createdAt
-                }
-              }
-            }
-          }
-        `,
-      }),
     });
 
-    const data = await response.json();
-    if (data.errors) {
-      console.error("Socket API error:", data.errors);
+   if (!response.ok) {
+      console.error("Socket API error:", response.status);
       return { pending: 0, signed: 0, proposals: [] };
     }
 
-    const proposals = data.data?.proposals?.edges?.map(e => e.node) || [];
-    const pending = proposals.filter(p => p.status === "PENDING").length;
-    const signed = proposals.filter(p => p.status === "SIGNED").length;
+    const proposals = await response.json();
+    const pendingStatuses = ["pending", "sent", "in_review"];
+    const signedStatuses = ["won", "won_client", "won_internal", "active"];
+    const pending = proposals.filter(p => pendingStatuses.includes(p.status)).length;
+    const signed = proposals.filter(p => signedStatuses.includes(p.status)).length;
 
     return { pending, signed, proposals };
   } catch (err) {
