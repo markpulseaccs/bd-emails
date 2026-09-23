@@ -1,0 +1,16 @@
+name: BD Weekly Email
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+
+jobs:
+  send-email:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Weekly Email
+        run: |
+          curl -X POST https://bd-emails.vercel.app/api/bd-emails \
+            -H "Authorization: Bearer my-super-secret-cron-key-12345" \
+            -H "Content-Type: application/json" \
+            -d '{"type":"weekly"}'
