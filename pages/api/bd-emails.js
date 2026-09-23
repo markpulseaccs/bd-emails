@@ -70,6 +70,7 @@ async function fetchSocketProposals() {
 async function fetchOutlookCalendar(daysAhead = 1) {
   try {
     const accessToken = await getMicrosoftAccessToken();
+console.log("Access token retrieved:", accessToken ? "yes" : "no");
     if (!accessToken) {
       console.error("Failed to get Microsoft access token");
       return [];
@@ -94,6 +95,7 @@ async function fetchOutlookCalendar(daysAhead = 1) {
     }
 
     const data = await response.json();
+console.log("Graph API returned:", data.value?.length || 0, "events");
     return data.value || [];
   } catch (err) {
     console.error("Outlook fetch error:", err);
