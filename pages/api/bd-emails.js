@@ -62,6 +62,9 @@ async function getSocketProposals() {
       console.log("First proposal status:", proposals[0].status);
     }
     
+    proposals = proposals.filter(p => !p.isHistorical);
+    console.log("Live (non-historical) proposals:", proposals.length);
+ 
     const discovery = proposals.filter(p => {
       const s = (p.status || "").toUpperCase();
       return s === "PENDING" || s === "SENT";
@@ -74,27 +77,36 @@ async function getSocketProposals() {
     
     if (proposals.length > 0) {
       console.log("First proposal keys:", Object.keys(proposals[0]).join(", "));
+      console.log("First proposal owner/assignee:", JSON.stringify({ owner: proposals[0].owner, assignee: proposals[0].assignee }));
     }
  
     const now = new Date();
-    const getDate = p => new Date(p.createdAt || p.created_at || p.sentAt || p.sent_at || p.updatedAt || p.updated_at || now);
+    const getDate = p => new Date(p.lastSentAt || p.createdAt || now);
     const getName = p => {
-      const primary = (p.clients || []).find(c => c.isPrimary) || (p.clients || [])[0];
-      return (primary && primary.name) || p.clientName || p.name || p.title || "Unnamed";
+      const primary = p.primaryClient || (p.clients || []).find(c => c.isPrimary) || (p.clients || [])[0];
+      return (primary && primary.name) || p.title || "Unnamed";
     };
+    const personName = x => {
+      if (!x) return "";
+      if (typeof x === "string") return x;
+      return x.name || [x.firstName, x.lastName].filter(Boolean).join(" ") || x.email || "";
+    };
+    const getOwner = p => personName(p.assignee) || personName(p.owner) || "—";
     const daysOld = p => Math.floor((now - getDate(p)) / (24 * 60 * 60 * 1000));
  
     const pendingList = discovery
-      .map(p => ({ name: getName(p), days: daysOld(p), annual: p.annualPrice || 0, oneOff: p.oneOffPrice || 0 }))
+      .map(p => ({ name: getName(p), owner: getOwner(p), days: daysOld(p), annual: p.annualPrice || 0, oneOff: p.oneOffPrice || 0 }))
       .sort((a, b) => b.days - a.days);
  
     const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     const stalled = [...review, ...discovery].filter(p => getDate(p) < twoWeeksAgo);
+    const recentlySigned = signed.filter(p => p.wonDate && new Date(p.wonDate) >= thirtyDaysAgo);
     
-    return { discovery: discovery.length, review: review.length, signed: signed.length, active: active.length, stalled: stalled.length, total: proposals.length, pendingList };
+    return { discovery: discovery.length, review: review.length, signed: recentlySigned.length, signedAllTime: signed.length, active: active.length, stalled: stalled.length, total: proposals.length, pendingList };
   } catch (err) {
     console.error("Socket error:", err.message);
-    return { discovery: 0, review: 0, signed: 0, active: 0, stalled: 0, total: 0, pendingList: [] };
+    return { discovery: 0, review: 0, signed: 0, signedAllTime: 0, active: 0, stalled: 0, total: 0, pendingList: [] };
   }
 }
  
@@ -103,9 +115,9 @@ function pendingTable(list) {
   const rows = list.map(p => {
     const color = p.days > 30 ? "#dc2626" : p.days > 14 ? "#b45309" : "#047857";
     const value = p.annual ? `£${Number(p.annual).toLocaleString("en-GB")}/yr` : p.oneOff ? `£${Number(p.oneOff).toLocaleString("en-GB")} one-off` : "—";
-    return `<tr><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#374151;">${escapeHtml(p.name)}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#374151; text-align:right;">${value}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; font-weight:700; color:${color}; text-align:right;">${p.days}d</td></tr>`;
+    return `<tr><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#374151;">${escapeHtml(p.name)}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#64748b;">${escapeHtml(p.owner)}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#374151; text-align:right;">${value}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; font-weight:700; color:${color}; text-align:right;">${p.days}d</td></tr>`;
   }).join("");
-  return `<table cellpadding="0" cellspacing="0" style="width:100%; margin:6px 0; border-collapse:collapse;"><tr><th style="text-align:left; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Client</th><th style="text-align:right; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Value</th><th style="text-align:right; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Age</th></tr>${rows}</table>`;
+  return `<table cellpadding="0" cellspacing="0" style="width:100%; margin:6px 0; border-collapse:collapse;"><tr><th style="text-align:left; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Client</th><th style="text-align:left; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Owner</th><th style="text-align:right; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Value</th><th style="text-align:right; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Age</th></tr>${rows}</table>`;
 }
  
 async function sendEmail(subject, html) {
@@ -135,7 +147,7 @@ async function buildDailyEmail() {
   
   const statsHtml = `${statCell("In Discovery", String(discovery), "#1d1a4d")}${statCell("In Review", String(review), "#b45309")}${statCell("Stalled", String(stalled), "#dc2626")}${statCell("Active", String(active), "#047857")}`;
   
-  const bodyHtml = `<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pipeline Status</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Signed proposals awaiting kickstart: <strong>${signed}</strong></li><li>Proposals in review (⚠️ ${stalled} overdue): <strong>${review}</strong></li><li>New discovery conversations: <strong>${discovery}</strong></li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pending Proposals (${pendingList.length}) — oldest first</h3>${pendingTable(pendingList)}<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Legacy Client Outreach</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Pending contact: <strong>${legacyStatus}/16</strong></li><li>Total value at risk: <strong>£326k</strong></li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Today's Actions</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Follow up on ${stalled} stalled proposals</li><li>Contact ${Math.min(3, legacyStatus)} legacy clients</li><li>Coordinate kickstart meetings</li></ul>`;
+  const bodyHtml = `<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pipeline Status</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Signed in last 30 days (awaiting kickstart): <strong>${signed}</strong></li><li>Proposals in review (⚠️ ${stalled} overdue): <strong>${review}</strong></li><li>New discovery conversations: <strong>${discovery}</strong></li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pending Proposals (${pendingList.length}) — oldest first</h3>${pendingTable(pendingList)}<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Legacy Client Outreach</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Pending contact: <strong>${legacyStatus}/16</strong></li><li>Total value at risk: <strong>£326k</strong></li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Today's Actions</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Follow up on ${stalled} stalled proposals</li><li>Contact ${Math.min(3, legacyStatus)} legacy clients</li><li>Coordinate kickstart meetings</li></ul>`;
   
   return buildEmailHtml({ title: "BD Daily Priorities", subtitle: `${new Date().toLocaleDateString("en-GB")}`, logoUrl: "https://pulse-dashboard-7zua.vercel.app/pulse-logo.png", statsHtml, bodyHtml, footerNote: "Source: BD pipeline tracker. Generated automatically." });
 }
@@ -204,4 +216,3 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
- 
