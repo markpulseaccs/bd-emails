@@ -135,4 +135,4 @@ export default async function handler(req, res) {
     console.error("Send error:", err);
     return res.status(500).json({ error: err.message });
   }
-}const token = await getMicrosoftAccessToken();console.log("Token result:", token ? "success" : "null");
+}const token = await getMicrosoftAccessToken();console.log("Token result:", token ? "success" : "null");console.log("MS auth response:", data.error || "ok", "has token:", !!data.access_token);
