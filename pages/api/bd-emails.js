@@ -2,9 +2,6 @@
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const CRON_SECRET = process.env.CRON_SECRET;
 const SOCKET_API_KEY = process.env.SOCKET_API_KEY;
-const MS_TENANT_ID = process.env.MS_TENANT_ID;
-const MS_CLIENT_ID = process.env.MS_CLIENT_ID;
-const MS_CLIENT_SECRET = process.env.MS_CLIENT_SECRET;
 
 // Legacy clients to track
 const LEGACY_CLIENTS = [
@@ -26,6 +23,58 @@ const LEGACY_CLIENTS = [
   { name: "Olo Marketing", value: 1.8, status: "pending" },
 ];
 
+// Escape HTML
+function escapeHtml(s) {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// Stat cell
+function statCell(label, value, color) {
+  return `<td align="center" style="padding:8px 6px; background:#f8fafc; border-radius:8px;">
+    <div style="font-size:22px; font-weight:700; color:${color}; line-height:1;">${value}</div>
+    <div style="font-size:10px; text-transform:uppercase; color:#64748b; margin-top:4px; letter-spacing:0.05em;">${escapeHtml(label)}</div>
+  </td>`;
+}
+
+// Build branded email HTML
+function buildEmailHtml(opts) {
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(opts.title)}</title></head>
+  <body style="margin:0; background:#f1f5f9; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+  <table cellpadding="0" cellspacing="0" style="width:100%; background:#f1f5f9; padding:16px 0;"><tr><td align="center">
+  <table cellpadding="0" cellspacing="0" style="width:680px; max-width:96%; background:#fff; border-radius:12px; overflow:hidden;">
+    <tr><td style="background:#1d1a4d; padding:0;">
+      <div style="height:4px; background:linear-gradient(90deg,#2dd4bf 0%,#22d3ee 50%,#e879f9 100%);"></div>
+      <div style="padding:18px 24px;">
+        <table cellpadding="0" cellspacing="0" style="width:100%;"><tr>
+          <td style="width:48px; vertical-align:middle;"><img src="${opts.logoUrl}" alt="Pulse" width="40" height="40" style="display:block; border-radius:8px; border:0;" /></td>
+          <td style="vertical-align:middle; padding-left:14px;">
+            <h1 style="margin:0; font-size:18px; color:#fff;">${escapeHtml(opts.title)}</h1>
+            <p style="margin:4px 0 0; font-size:12px; color:#a5b4fc;">${escapeHtml(opts.subtitle)}</p>
+          </td>
+        </tr></table>
+      </div>
+    </td></tr>
+    ${
+      opts.statsHtml
+        ? `<tr><td style="padding:18px 24px;">
+      <table cellpadding="0" cellspacing="0" style="width:100%;"><tr>${opts.statsHtml}</tr></table>
+    </td></tr>`
+        : ""
+    }
+    <tr><td style="padding:6px 24px 0;">${opts.bodyHtml}</td></tr>
+    <tr><td style="padding:10px 24px 4px;"></td></tr>
+    <tr><td style="background:#f8fafc; padding:12px 24px; font-size:11px; color:#94a3b8;">
+      ${escapeHtml(opts.footerNote)}
+    </td></tr>
+  </table>
+  </td></tr></table></body></html>`;
+}
+
 // Socket API: get detailed proposal data
 async function getSocketProposals() {
   try {
@@ -35,13 +84,11 @@ async function getSocketProposals() {
     const data = await response.json();
     const proposals = data.data || [];
     
-    // Categorize by stage
     const discovery = proposals.filter(p => p.status === "pending" || p.status === "sent");
     const review = proposals.filter(p => p.status === "in_review");
     const signed = proposals.filter(p => ["won", "won_client", "won_internal"].includes(p.status));
     const active = proposals.filter(p => p.status === "active");
     
-    // Find stalled (in review >14 days ago)
     const now = new Date();
     const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
     const stalled = review.filter(p => new Date(p.created_at) < twoWeeksAgo);
@@ -53,7 +100,6 @@ async function getSocketProposals() {
       active: active.length,
       stalled: stalled.length,
       total: proposals.length,
-      proposalsByStatus: { discovery, review, signed, active, stalled }
     };
   } catch (err) {
     console.error("Socket error:", err.message);
@@ -93,152 +139,155 @@ async function sendEmail(subject, html) {
 // Build daily email
 async function buildDailyEmail() {
   const { discovery, review, signed, active, stalled } = await getSocketProposals();
-  const now = new Date().toLocaleString("en-GB");
   const legacyStatus = LEGACY_CLIENTS.filter(c => c.status === "pending").length;
   
-  return {
-    subject: `BD Daily Priorities — ${new Date().toLocaleDateString("en-GB")}`,
-    html: `
-<h2>Daily Priorities — ${new Date().toLocaleDateString("en-GB")}</h2>
-<p><strong>Generated:</strong> ${now}</p>
-
-<h3>Pipeline Status</h3>
-<ul>
-<li><strong>In Discovery:</strong> ${discovery}</li>
-<li><strong>In Review:</strong> ${review}</li>
-<li><strong>⚠️ Stalled (>14 days):</strong> ${stalled}</li>
-<li><strong>Signed (awaiting kickstart):</strong> ${signed}</li>
-<li><strong>Active clients:</strong> ${active}</li>
-</ul>
-
-<h3>Legacy Client Outreach</h3>
-<ul>
-<li><strong>Pending contact:</strong> ${legacyStatus}/16</li>
-<li><strong>Total value at risk:</strong> £326k</li>
-</ul>
-
-<h3>Today's Action Items</h3>
-<ul>
-<li>Follow up on ${stalled} stalled proposals</li>
-<li>Contact ${Math.min(3, legacyStatus)} legacy clients</li>
-<li>Check for new discovery inbound</li>
-<li>Coordinate kickstart meetings</li>
-</ul>
-    `,
-  };
+  const statsHtml = `
+    ${statCell("In Discovery", String(discovery), "#1d1a4d")}
+    ${statCell("In Review", String(review), "#b45309")}
+    ${statCell("Stalled", String(stalled), "#dc2626")}
+    ${statCell("Active", String(active), "#047857")}
+  `;
+  
+  const bodyHtml = `
+    <h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pipeline Status</h3>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;">
+      <li>Signed proposals awaiting kickstart: <strong>${signed}</strong></li>
+      <li>Proposals in review (⚠️ ${stalled} overdue): <strong>${review}</strong></li>
+      <li>New discovery conversations: <strong>${discovery}</strong></li>
+    </ul>
+    
+    <h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Legacy Client Outreach</h3>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;">
+      <li>Pending contact: <strong>${legacyStatus}/16</strong></li>
+      <li>Total value at risk: <strong>£326k</strong></li>
+    </ul>
+    
+    <h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Today's Actions</h3>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;">
+      <li>Follow up on ${stalled} stalled proposals</li>
+      <li>Contact ${Math.min(3, legacyStatus)} legacy clients</li>
+      <li>Coordinate kickstart meetings</li>
+    </ul>
+  `;
+  
+  return buildEmailHtml({
+    title: "BD Daily Priorities",
+    subtitle: `${new Date().toLocaleDateString("en-GB")}`,
+    logoUrl: "https://pulse-dashboard-7zua.vercel.app/pulse-logo.png",
+    statsHtml,
+    bodyHtml,
+    footerNote: "Source: BD pipeline tracker. Generated automatically.",
+  });
 }
 
 // Build weekly email
 async function buildWeeklyEmail() {
   const { discovery, review, signed, active, stalled } = await getSocketProposals();
-  const now = new Date().toLocaleString("en-GB");
-  const weekOf = new Date(new Date().setDate(new Date().getDate() - new Date().getDay() + 1)).toLocaleDateString("en-GB");
   const legacyContacted = LEGACY_CLIENTS.filter(c => c.status !== "pending").length;
-  const legacyValue = LEGACY_CLIENTS.reduce((sum, c) => sum + c.value, 0);
+  const conversionRate = discovery + review + signed > 0 ? Math.round((signed / (discovery + review + signed)) * 100) : 0;
   
-  return {
-    subject: `BD Weekly Summary — Week of ${weekOf}`,
-    html: `
-<h2>Weekly Summary — Week of ${weekOf}</h2>
-<p><strong>Generated:</strong> ${now}</p>
-
-<h3>Pipeline Movement</h3>
-<ul>
-<li><strong>Discovery:</strong> ${discovery} active conversations</li>
-<li><strong>In Review:</strong> ${review} proposals awaiting signature</li>
-<li><strong>⚠️ Stalled (>14d):</strong> ${stalled} — <strong>ACTION REQUIRED</strong></li>
-<li><strong>Signed:</strong> ${signed} clients ready for kickstart</li>
-<li><strong>Active:</strong> ${active} clients in service</li>
-</ul>
-
-<h3>Legacy Client Progress</h3>
-<ul>
-<li><strong>Contacted:</strong> ${legacyContacted}/16</li>
-<li><strong>Pipeline value:</strong> £${legacyValue}k</li>
-<li><strong>Target:</strong> All by 31 Dec (98 days remaining)</li>
-</ul>
-
-<h3>This Week — Focus Areas</h3>
-<ul>
-<li>Unblock ${stalled} stalled proposals (discovery calls, signature coordination)</li>
-<li>Move ${signed} signed clients into kickstart phase</li>
-<li>Contact ${5 - legacyContacted} new legacy clients</li>
-<li>Track conversion: 60%+ proposal → signature target</li>
-</ul>
-
-<h3>KPI Tracking</h3>
-<ul>
-<li><strong>Proposal → Signature:</strong> ${signed > 0 ? Math.round((signed / (discovery + review + signed)) * 100) : 0}% (Target: 60%+)</li>
-<li><strong>Signature → Kickstart:</strong> Within 10 working days</li>
-<li><strong>Kickstart → Active:</strong> ${active} clients delivered (Target: 30 days)</li>
-</ul>
-    `,
-  };
+  const statsHtml = `
+    ${statCell("Pipeline", String(discovery + review + signed + active), "#1d1a4d")}
+    ${statCell("Conversion %", String(conversionRate) + "%", conversionRate >= 60 ? "#047857" : "#b45309")}
+    ${statCell("Legacy Contacted", String(legacyContacted) + "/16", legacyContacted >= 8 ? "#047857" : "#b45309")}
+    ${statCell("Stalled", String(stalled), stalled === 0 ? "#047857" : "#dc2626")}
+  `;
+  
+  const weekOf = new Date(new Date().setDate(new Date().getDate() - new Date().getDay() + 1)).toLocaleDateString("en-GB");
+  
+  const bodyHtml = `
+    <h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pipeline Movement</h3>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;">
+      <li>Active discovery: <strong>${discovery}</strong></li>
+      <li>Proposals in review: <strong>${review}</strong> (⚠️ ${stalled} stalled >14 days)</li>
+      <li>Signed & ready for kickstart: <strong>${signed}</strong></li>
+      <li>Active clients delivering: <strong>${active}</strong></li>
+    </ul>
+    
+    <h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">KPI Progress</h3>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;">
+      <li>Proposal → Signature: <strong>${conversionRate}%</strong> (Target: 60%+)</li>
+      <li>Signature → Kickstart: Within 10 working days</li>
+      <li>Kickstart → Active: ${active} clients progressing (Target: 30 days)</li>
+    </ul>
+    
+    <h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Legacy Clients</h3>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;">
+      <li>Contacted: <strong>${legacyContacted}/16</strong> (£${LEGACY_CLIENTS.filter(c => c.status !== "pending").reduce((s, c) => s + c.value, 0)}k value)</li>
+      <li>Pipeline value: <strong>£326k total</strong></li>
+      <li>Target: All contacted by 31 Dec</li>
+    </ul>
+  `;
+  
+  return buildEmailHtml({
+    title: "BD Weekly Summary",
+    subtitle: `Week of ${weekOf}`,
+    logoUrl: "https://pulse-dashboard-7zua.vercel.app/pulse-logo.png",
+    statsHtml,
+    bodyHtml,
+    footerNote: "Source: BD pipeline tracker. Generated automatically.",
+  });
 }
 
 // Build monthly email
 async function buildMonthlyEmail() {
   const { discovery, review, signed, active, stalled, total } = await getSocketProposals();
-  const now = new Date().toLocaleString("en-GB");
-  const month = new Date().toLocaleString("en-GB", { month: "long", year: "numeric" });
   const legacyContacted = LEGACY_CLIENTS.filter(c => c.status !== "pending").length;
-  const legacyValue = LEGACY_CLIENTS.reduce((sum, c) => sum + c.value, 0);
   const conversionRate = total > 0 ? Math.round((signed / total) * 100) : 0;
   
-  return {
-    subject: `BD KPI Review — ${month}`,
-    html: `
-<h2>Monthly KPI Review — ${month}</h2>
-<p><strong>Generated:</strong> ${now}</p>
-
-<h3>Key Metrics</h3>
-<ul>
-<li><strong>Total Pipeline:</strong> ${total} proposals (${active} active clients)</li>
-<li><strong>Conversion Rate:</strong> ${conversionRate}% (Target: 60%+)</li>
-<li><strong>Stalled Proposals:</strong> ${stalled} overdue for signature</li>
-<li><strong>Ready for Kickstart:</strong> ${signed} signed clients</li>
-</ul>
-
-<h3>Onboarding Progress</h3>
-<ul>
-<li><strong>Discovery → Proposal:</strong> ${discovery} active</li>
-<li><strong>Proposal → Signature:</strong> ${review} in review (${stalled} stalled)</li>
-<li><strong>Signature → Kickstart:</strong> ${signed} ready (within 10 days target)</li>
-<li><strong>Kickstart → Active Service:</strong> ${active} delivering (within 30 days target)</li>
-</ul>
-
-<h3>Legacy Client Pipeline (£${legacyValue}k)</h3>
-<p><strong>Contacted: ${legacyContacted}/16</strong></p>
-<ul>
-<li><strong>Active:</strong> Marc Hardy (£10k)</li>
-<li><strong>Proposal Sent:</strong> David Whitehead (£60k), OctoPos (£5.4k)</li>
-<li><strong>Contacted:</strong> Gills/Sonny (£60k), Tom Byron (£50k), Tony Maughan (£40k)</li>
-<li><strong>Pending Contact (£${legacyValue - 231.4}k):</strong> Craig Lynch, PB Pub Solutions, Chaser, Posithread, PLRB, Ivy Stockton, Bishop Auckland, Galaxee, Amanda Scrimshaw, Olo Marketing</li>
-</ul>
-
-<h3>November Gate Review Readiness</h3>
-<ul>
-<li>✓ BD repositioning ownership</li>
-<li>✓ Onboarding process visibility (this email)</li>
-<li>${conversionRate >= 60 ? "✓" : "⚠️"} Conversion rate 60%+ target (currently ${conversionRate}%)</li>
-<li>${legacyContacted === 16 ? "✓" : "⚠️"} Legacy client contact completion (${legacyContacted}/16)</li>
-<li>⏳ First service delivery tracking (${active} in progress)</li>
-</ul>
-
-<h3>Actions for Next Month</h3>
-<ul>
-<li>Resolve ${stalled} stalled proposals</li>
-<li>Move ${signed} signed clients to active kickstart</li>
-<li>Contact remaining ${16 - legacyContacted} legacy clients</li>
-<li>Track time-to-kickstart and time-to-active metrics</li>
-</ul>
-    `,
-  };
+  const statsHtml = `
+    ${statCell("Total Pipeline", String(total), "#1d1a4d")}
+    ${statCell("Active Clients", String(active), "#047857")}
+    ${statCell("Conversion %", String(conversionRate) + "%", conversionRate >= 60 ? "#047857" : "#b45309")}
+    ${statCell("Legacy %", String(legacyContacted) + "/16", legacyContacted >= 8 ? "#047857" : "#b45309")}
+  `;
+  
+  const month = new Date().toLocaleString("en-GB", { month: "long", year: "numeric" });
+  
+  const bodyHtml = `
+    <h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Onboarding Pipeline</h3>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;">
+      <li>Discovery → Proposal: <strong>${discovery}</strong> active</li>
+      <li>Proposal → Signature: <strong>${review}</strong> in review (${stalled} stalled)</li>
+      <li>Signature → Kickstart: <strong>${signed}</strong> ready</li>
+      <li>Kickstart → Active Service: <strong>${active}</strong> delivering</li>
+    </ul>
+    
+    <h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">KPI Metrics</h3>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;">
+      <li>Proposal → Signature: <strong>${conversionRate}%</strong> (Target: 60%+) ${conversionRate >= 60 ? "✓" : "⚠️"}</li>
+      <li>Signature → Kickstart: Within 10 working days</li>
+      <li>Kickstart → Active: ${active} clients (Target: 30 days)</li>
+    </ul>
+    
+    <h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Legacy Client Pipeline (£326k)</h3>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;">
+      <li>Contacted: <strong>${legacyContacted}/16</strong> (${Math.round((legacyContacted / 16) * 100)}%)</li>
+      <li>Active/Proposal stage: Marc Hardy, David Whitehead, OctoPos</li>
+      <li>Pending: Craig Lynch, PB Pub, Chaser, +8 others</li>
+      <li>Target: All by 31 Dec</li>
+    </ul>
+    
+    <h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">November Gate Review</h3>
+    <ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;">
+      <li>${conversionRate >= 60 ? "✓" : "⚠️"} Conversion rate 60%+ (${conversionRate}%)</li>
+      <li>${legacyContacted === 16 ? "✓" : "⚠️"} Legacy client completion (${legacyContacted}/16)</li>
+      <li>⏳ First service delivery tracking (${active} active)</li>
+    </ul>
+  `;
+  
+  return buildEmailHtml({
+    title: "BD KPI Review",
+    subtitle: month,
+    logoUrl: "https://pulse-dashboard-7zua.vercel.app/pulse-logo.png",
+    statsHtml,
+    bodyHtml,
+    footerNote: "Source: BD pipeline tracker. Generated automatically.",
+  });
 }
 
 // Main handler
 export default async function handler(req, res) {
-  // CORS + auth check
   if (req.method !== "POST") {
     return res.status(405).json({ error: "POST only" });
   }
@@ -249,21 +298,26 @@ export default async function handler(req, res) {
   }
 
   const { type } = req.body;
-  let email;
+  let html;
 
   try {
     if (type === "daily") {
-      email = await buildDailyEmail();
+      html = await buildDailyEmail();
     } else if (type === "weekly") {
-      email = await buildWeeklyEmail();
+      html = await buildWeeklyEmail();
     } else if (type === "monthly") {
-      email = await buildMonthlyEmail();
+      html = await buildMonthlyEmail();
     } else {
       return res.status(400).json({ error: "Invalid type" });
     }
 
-    const sent = await sendEmail(email.subject, email.html);
-    return res.status(sent ? 200 : 500).json({ sent, subject: email.subject });
+    const sent = await sendEmail(
+      type === "daily" ? `BD Daily Priorities — ${new Date().toLocaleDateString("en-GB")}` :
+      type === "weekly" ? `BD Weekly Summary — Week of ${new Date(new Date().setDate(new Date().getDate() - new Date().getDay() + 1)).toLocaleDateString("en-GB")}` :
+      `BD KPI Review — ${new Date().toLocaleString("en-GB", { month: "long", year: "numeric" })}`,
+      html
+    );
+    return res.status(sent ? 200 : 500).json({ sent });
   } catch (err) {
     console.error("Handler error:", err.message);
     return res.status(500).json({ error: err.message });
