@@ -1,10 +1,10 @@
 import { Resend } from "resend";
-
+ 
 // Env vars
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const CRON_SECRET = process.env.CRON_SECRET;
 const SOCKET_API_KEY = process.env.SOCKET_API_KEY;
-
+ 
 // Legacy clients
 const LEGACY_CLIENTS = [
   { name: "Gills/Sonny Gill", value: 60, status: "contacted" },
@@ -24,33 +24,46 @@ const LEGACY_CLIENTS = [
   { name: "Amanda Scrimshaw", value: 2.4, status: "pending" },
   { name: "Olo Marketing", value: 1.8, status: "pending" },
 ];
-
+ 
 function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
-
+ 
 function statCell(label, value, color) {
   return `<td align="center" style="padding:8px 6px; background:#f8fafc; border-radius:8px;"><div style="font-size:22px; font-weight:700; color:${color}; line-height:1;">${value}</div><div style="font-size:10px; text-transform:uppercase; color:#64748b; margin-top:4px; letter-spacing:0.05em;">${escapeHtml(label)}</div></td>`;
 }
-
+ 
 function buildEmailHtml(opts) {
   const statsSection = opts.statsHtml ? `<tr><td style="padding:18px 24px;"><table cellpadding="0" cellspacing="0" style="width:100%;"><tr>${opts.statsHtml}</tr></table></td></tr>` : "";
   
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(opts.title)}</title></head><body style="margin:0; background:#f1f5f9; font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;"><table cellpadding="0" cellspacing="0" style="width:100%; background:#f1f5f9; padding:16px 0;"><tr><td align="center"><table cellpadding="0" cellspacing="0" style="width:680px; max-width:96%; background:#fff; border-radius:12px; overflow:hidden;"><tr><td style="background:#1d1a4d; padding:0;"><div style="height:4px; background:linear-gradient(90deg,#2dd4bf 0%,#22d3ee 50%,#e879f9 100%);"></div><div style="padding:18px 24px;"><table cellpadding="0" cellspacing="0" style="width:100%;"><tr><td style="width:48px; vertical-align:middle;"><img src="${opts.logoUrl}" alt="Pulse" width="40" height="40" style="display:block; border-radius:8px; border:0;" /></td><td style="vertical-align:middle; padding-left:14px;"><h1 style="margin:0; font-size:18px; color:#fff;">${escapeHtml(opts.title)}</h1><p style="margin:4px 0 0; font-size:12px; color:#a5b4fc;">${escapeHtml(opts.subtitle)}</p></td></tr></table></div></td></tr>${statsSection}<tr><td style="padding:6px 24px 0;">${opts.bodyHtml}</td></tr><tr><td style="padding:10px 24px 4px;"></td></tr><tr><td style="background:#f8fafc; padding:12px 24px; font-size:11px; color:#94a3b8;">${escapeHtml(opts.footerNote)}</td></tr></table></td></tr></table></body></html>`;
 }
-
+ 
 async function getSocketProposals() {
   try {
+    console.log("Socket API Key:", SOCKET_API_KEY ? "SET" : "MISSING");
     const response = await fetch("https://app.usesocket.com/api/v1/proposals", {
       headers: { Authorization: `Bearer ${SOCKET_API_KEY}` },
     });
+    console.log("Socket response status:", response.status);
     const data = await response.json();
-    const proposals = data.data || [];
     
-    const discovery = proposals.filter(p => p.status === "pending" || p.status === "sent");
-    const review = proposals.filter(p => p.status === "in_review");
-    const signed = proposals.filter(p => ["won", "won_client", "won_internal"].includes(p.status));
-    const active = proposals.filter(p => p.status === "active");
+    const proposals = data.data || [];
+    console.log("Socket response total:", proposals.length);
+    
+    if (proposals.length > 0) {
+      console.log("First proposal status:", proposals[0].status);
+    }
+    
+    const discovery = proposals.filter(p => {
+      const s = (p.status || "").toUpperCase();
+      return s === "PENDING" || s === "SENT";
+    });
+    const review = proposals.filter(p => (p.status || "").toUpperCase() === "IN_REVIEW");
+    const signed = proposals.filter(p => ["WON", "WON_CLIENT", "WON_INTERNAL"].includes((p.status || "").toUpperCase()));
+    const active = proposals.filter(p => (p.status || "").toUpperCase() === "ACTIVE");
+    
+    console.log("Filtered counts:", { discovery: discovery.length, review: review.length, signed: signed.length, active: active.length });
     
     const now = new Date();
     const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
@@ -62,7 +75,7 @@ async function getSocketProposals() {
     return { discovery: 0, review: 0, signed: 0, active: 0, stalled: 0, total: 0 };
   }
 }
-
+ 
 async function sendEmail(subject, html) {
   try {
     const resend = new Resend(RESEND_API_KEY);
@@ -83,7 +96,7 @@ async function sendEmail(subject, html) {
     return false;
   }
 }
-
+ 
 async function buildDailyEmail() {
   const { discovery, review, signed, active, stalled } = await getSocketProposals();
   const legacyStatus = LEGACY_CLIENTS.filter(c => c.status === "pending").length;
@@ -94,7 +107,7 @@ async function buildDailyEmail() {
   
   return buildEmailHtml({ title: "BD Daily Priorities", subtitle: `${new Date().toLocaleDateString("en-GB")}`, logoUrl: "https://pulse-dashboard-7zua.vercel.app/pulse-logo.png", statsHtml, bodyHtml, footerNote: "Source: BD pipeline tracker. Generated automatically." });
 }
-
+ 
 async function buildWeeklyEmail() {
   const { discovery, review, signed, active, stalled } = await getSocketProposals();
   const legacyContacted = LEGACY_CLIENTS.filter(c => c.status !== "pending").length;
@@ -108,7 +121,7 @@ async function buildWeeklyEmail() {
   
   return buildEmailHtml({ title: "BD Weekly Summary", subtitle: `Week of ${weekOf}`, logoUrl: "https://pulse-dashboard-7zua.vercel.app/pulse-logo.png", statsHtml, bodyHtml, footerNote: "Source: BD pipeline tracker. Generated automatically." });
 }
-
+ 
 async function buildMonthlyEmail() {
   const { discovery, review, signed, active, stalled, total } = await getSocketProposals();
   const legacyContacted = LEGACY_CLIENTS.filter(c => c.status !== "pending").length;
@@ -122,20 +135,20 @@ async function buildMonthlyEmail() {
   
   return buildEmailHtml({ title: "BD KPI Review", subtitle: month, logoUrl: "https://pulse-dashboard-7zua.vercel.app/pulse-logo.png", statsHtml, bodyHtml, footerNote: "Source: BD pipeline tracker. Generated automatically." });
 }
-
+ 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "POST only" });
   }
-
+ 
   const authHeader = req.headers.authorization;
   if (authHeader !== `Bearer ${CRON_SECRET}`) {
     return res.status(401).json({ error: "Unauthorized" });
   }
-
+ 
   const { type } = req.body;
   let html;
-
+ 
   try {
     if (type === "daily") {
       html = await buildDailyEmail();
@@ -146,7 +159,7 @@ export default async function handler(req, res) {
     } else {
       return res.status(400).json({ error: "Invalid type" });
     }
-
+ 
     const sent = await sendEmail(
       type === "daily" ? `BD Daily Priorities — ${new Date().toLocaleDateString("en-GB")}` :
       type === "weekly" ? `BD Weekly Summary — Week of ${new Date(new Date().setDate(new Date().getDate() - new Date().getDay() + 1)).toLocaleDateString("en-GB")}` :
@@ -159,3 +172,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
+ 
