@@ -48,7 +48,14 @@ async function getSocketProposals() {
     console.log("Socket response status:", response.status);
     const data = await response.json();
     
-    const proposals = data.data || [];
+    let proposals = [];
+    if (Array.isArray(data)) {
+      proposals = data;
+    } else if (data && typeof data === "object") {
+      console.log("Socket response keys:", Object.keys(data).join(", "));
+      const arrKey = Object.keys(data).find(k => Array.isArray(data[k]));
+      proposals = arrKey ? data[arrKey] : [];
+    }
     console.log("Socket response total:", proposals.length);
     
     if (proposals.length > 0) {
