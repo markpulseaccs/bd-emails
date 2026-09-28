@@ -60,7 +60,7 @@ async function fetchOutlookCalendar(days = 1) {
       { headers: { "Authorization": `Bearer ${token}` } }
     );
     if (!res.ok) return [];
-    const data = await res.json();
+    const data = await res.json();console.log("Graph response:", res.status, "events:", data.value?.length || 0);
     return data.value || [];
   } catch (err) {
     console.error("Outlook error:", err);
@@ -135,4 +135,4 @@ export default async function handler(req, res) {
     console.error("Send error:", err);
     return res.status(500).json({ error: err.message });
   }
-}
+}const token = await getMicrosoftAccessToken();console.log("Token result:", token ? "success" : "null");
