@@ -77,7 +77,6 @@ async function getSocketProposals() {
     
     if (proposals.length > 0) {
       console.log("First proposal keys:", Object.keys(proposals[0]).join(", "));
-      console.log("First proposal owner/assignee:", JSON.stringify({ owner: proposals[0].owner, assignee: proposals[0].assignee }));
     }
  
     const now = new Date();
@@ -91,7 +90,11 @@ async function getSocketProposals() {
       if (typeof x === "string") return x;
       return x.name || [x.firstName, x.lastName].filter(Boolean).join(" ") || x.email || "";
     };
-    const getOwner = p => personName(p.assignee) || personName(p.owner) || "—";
+    const getOwner = p => personName(p.assignee) || personName(p.owner) || personName(p.clientOwner) || personName(p.clientManager) || "—";
+    if (discovery.length > 0) {
+      const d = discovery[0];
+      console.log("Pending proposal people:", JSON.stringify({ owner: d.owner, assignee: d.assignee, clientOwner: d.clientOwner, clientManager: d.clientManager }));
+    }
     const daysOld = p => Math.floor((now - getDate(p)) / (24 * 60 * 60 * 1000));
  
     const pendingList = discovery
@@ -216,3 +219,4 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
+ 
