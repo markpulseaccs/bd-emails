@@ -166,7 +166,7 @@ async function getSocketData() {
     const lost = all.filter(p => LOST.includes(st(p)));
 
     // one-off visibility of any statuses we're not classifying
-    const known = new Set(["PENDING", "SENT", "IN_REVIEW", "ACTIVE", "DRAFT", ...WON, ...LOST]);
+    const known = new Set(["PENDING", "SENT", "IN_REVIEW", "ACTIVE", "DRAFT", "CLOSED", ...WON, ...LOST]); // CLOSED = completed engagement, not a pipeline outcome
     const other = {};
     all.forEach(p => { const s = st(p); if (!known.has(s)) other[s] = (other[s] || 0) + 1; });
     if (Object.keys(other).length) console.log("Unclassified Socket statuses:", JSON.stringify(other));
@@ -392,13 +392,14 @@ function kpiSection(k, periodName) {
 }
 function actionsSection(k, todaysEvents) {
   const items = [];
-  if (k.kickstartOverdue.length) items.push(`<strong style="color:${C.red}">Book kickstart</strong> for ${k.kickstartOverdue.slice(0, 3).map(x => escapeHtml(x.name)).join(", ")}${k.kickstartOverdue.length > 3 ? ` +${k.kickstartOverdue.length - 3}` : ""} — over ${TARGETS.kickstartWorkingDays} working days since signature, nothing in the diary`);
+  const names = list => list.map(x => escapeHtml(x.name)).join(", ");
+  if (k.kickstartOverdue.length) items.push(`<strong style="color:${C.red}">Book kickstart</strong> for ${names(k.kickstartOverdue)} — over ${TARGETS.kickstartWorkingDays} working days since signature, nothing in the diary`);
   const unbooked = k.awaitingKickstart.filter(x => !x.kickstart && x.wd <= TARGETS.kickstartWorkingDays);
-  if (unbooked.length) items.push(`<strong>Book kickstart</strong> for ${unbooked.slice(0, 3).map(x => escapeHtml(x.name)).join(", ")}${unbooked.length > 3 ? ` +${unbooked.length - 3}` : ""} — signed recently, not yet in the diary`);
+  if (unbooked.length) items.push(`<strong>Book kickstart</strong> for ${names(unbooked)} — signed recently, not yet in the diary`);
   const fresh = k.pendingList.filter(p => p.days >= 3 && p.days <= 14);
-  if (fresh.length) items.push(`<strong>Chase</strong> ${fresh.slice(0, 3).map(x => escapeHtml(x.name)).join(", ")}${fresh.length > 3 ? ` +${fresh.length - 3}` : ""} — proposal sent 3–14 days ago, follow up before it stalls`);
+  if (fresh.length) items.push(`<strong>Chase</strong> ${names(fresh)} — proposal sent 3–14 days ago, follow up before it stalls`);
   if (k.stalled.length) items.push(`<strong>Close out</strong> ${k.stalled.length} stalled proposals (&gt;14d) — chase once more or mark declined/expired in Socket so the pipeline reflects live opportunities`);
-  if (k.legacyPending.length) items.push(`<strong>Legacy outreach</strong> — ${k.legacyPending.length} not yet contacted, ${k.legacyDaysLeft} days to ${fmtDate(TARGETS.legacyDeadline)}: next up ${k.legacyPending.slice(0, 3).map(x => escapeHtml(x.name)).join(", ")}`);
+  if (k.legacyPending.length) items.push(`<strong>Legacy outreach</strong> — ${k.legacyPending.length} not yet contacted, ${k.legacyDaysLeft} days to ${fmtDate(TARGETS.legacyDeadline)}: ${names(k.legacyPending)}`);
   const kickToday = (todaysEvents || []).filter(e => /kick\s?-?start|discovery/i.test(e.subject || ""));
   if (kickToday.length) items.push(`<strong>Today's BD meetings:</strong> ${kickToday.map(e => escapeHtml(e.subject)).join("; ")} — book the kickstart live in the meeting, don't defer`);
   if (!items.length) items.push("Pipeline clean — use the time for discovery outreach.");
@@ -424,7 +425,7 @@ async function buildDailyEmail() {
     h3(`Today's Calendar (${today.length})`) + calendarTable(today, false) +
     h3("Today's Actions") + actionsSection(k, today) +
     h3(`Awaiting Kickstart (${k.awaitingKickstart.length}) — signature → kickstart target ${TARGETS.kickstartWorkingDays} working days`) + kickstartTable(k.awaitingKickstart) +
-    h3(`Pending Proposals (${k.pendingList.length}) — oldest first`) + pendingTable(k.pendingList, 15) +
+    h3(`Pending Proposals (${k.pendingList.length}) — oldest first`) + pendingTable(k.pendingList) +
     h3("KPI Tracker — month to date") + kpiSection(k, "MTD");
 
   return { subject: `BD Daily — ${now().toLocaleDateString("en-GB")}`, html: buildEmailHtml({ title: "BD Daily Priorities", subtitle: now().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }), statsHtml, bodyHtml, footerNote: "Sources: Socket (proposals), Outlook (calendar). Generated automatically." }) };
