@@ -8,6 +8,8 @@ const MS_TENANT_ID = process.env.MS_TENANT_ID;
 const MS_CLIENT_ID = process.env.MS_CLIENT_ID;
 const MS_CLIENT_SECRET = process.env.MS_CLIENT_SECRET;
 const CALENDAR_MAILBOX = "mark@pulse-accountants.co.uk";
+const CALENDAR_FEED_URL = process.env.CALENDAR_FEED_URL || "https://pulse-dashboard-7zua.vercel.app/api/calendar-feed";
+const CALENDAR_FEED_TOKEN = process.env.CALENDAR_FEED_TOKEN;
 
 // Legacy clients
 const LEGACY_CLIENTS = [
@@ -165,7 +167,27 @@ async function getMicrosoftAccessToken() {
   }
 }
 
+async function getCalendarEventsViaFeed(days = 1) {
+  if (!CALENDAR_FEED_TOKEN) return null;
+  try {
+    const res = await fetch(`${CALENDAR_FEED_URL}?days=${days}&email=${encodeURIComponent(CALENDAR_MAILBOX)}`, {
+      headers: { Authorization: `Bearer ${CALENDAR_FEED_TOKEN}` },
+    });
+    if (!res.ok) {
+      console.error("Calendar feed error:", res.status, (await res.text()).substring(0, 300));
+      return null;
+    }
+    const data = await res.json();
+    return (data.value || []).filter(e => !e.isCancelled);
+  } catch (err) {
+    console.error("Calendar feed error:", err.message);
+    return null;
+  }
+}
+
 async function getCalendarEvents(days = 1) {
+  const viaFeed = await getCalendarEventsViaFeed(days);
+  if (viaFeed) return viaFeed;
   try {
     const token = await getMicrosoftAccessToken();
     if (!token) return [];
