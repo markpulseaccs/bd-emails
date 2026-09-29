@@ -152,9 +152,12 @@ async function getSocketData() {
     all.forEach(p => { const s = st(p); if (!known.has(s)) other[s] = (other[s] || 0) + 1; });
     if (Object.keys(other).length) console.log("Unclassified Socket statuses:", JSON.stringify(other));
 
-    // owner lives on the detail endpoint only — fetch for pending + recent won
-    const needOwner = [...pending, ...won.filter(p => p.wonDate && new Date(p.wonDate) >= daysAgo(60))];
+    // owner + signature date live on the detail endpoint only — fetch for pending + recently-sent won
+    const recentWon = won.filter(p => sentDate(p) && new Date(sentDate(p)) >= daysAgo(120));
+    const needDetail = [...pending, ...recentWon];
     const ownerById = {};
+    const signedById = {};
+    let loggedWon = false;
     const fetchDetail = async p => {
       try {
         const r = await fetch(`https://app.usesocket.com/api/v1/proposals/${p.id}`, { headers: { Authorization: `Bearer ${SOCKET_API_KEY}`, Accept: "application/json" } });
@@ -162,10 +165,19 @@ async function getSocketData() {
         const j = await r.json();
         const d = j.data || j;
         ownerById[p.id] = personName(d.creator) || personName(d.owner) || personName(d.assignedTo) || personName(d.assignee) || "";
+        const sig = d.signature || {};
+        const signedAt = d.wonDate || d.approvedAt || d.acceptedAt || sig.signedAt || sig.acceptedAt || sig.createdAt || sig.date || null;
+        if (signedAt) signedById[p.id] = signedAt;
+        if (WON.includes(String(d.status || "").toUpperCase()) && !loggedWon) {
+          loggedWon = true;
+          console.log("Won detail sample:", JSON.stringify({ n: d.proposalNumber, wonDate: d.wonDate, approvedAt: d.approvedAt, acceptedAt: d.acceptedAt, signature: d.signature, updatedAt: d.updatedAt, actualStart: d.actualStart, plannedStart: d.plannedStart }).substring(0, 600));
+        }
       } catch (e) { /* ignore */ }
     };
-    for (let i = 0; i < needOwner.length; i += 3) await Promise.all(needOwner.slice(i, i + 3).map(fetchDetail));
-    console.log(`Socket: ${all.length} live, ${pending.length} pending, ${won.length} won, ${active.length} active, ${lost.length} lost; owners resolved ${Object.values(ownerById).filter(Boolean).length}/${needOwner.length}`);
+    for (let i = 0; i < needDetail.length; i += 3) await Promise.all(needDetail.slice(i, i + 3).map(fetchDetail));
+    // attach resolved signature date; fall back to updatedAt for won proposals with nothing better
+    won.forEach(p => { p._signedAt = signedById[p.id] || p.wonDate || (recentWon.includes(p) ? p.updatedAt : null) || null; });
+    console.log(`Socket: ${all.length} live, ${pending.length} pending, ${won.length} won (${recentWon.length} recent), ${active.length} active, ${lost.length} lost; owners ${Object.values(ownerById).filter(Boolean).length}/${needDetail.length}, signed dates ${won.filter(p => p._signedAt).length}`);
 
     return { pending, won, active, lost, all, ownerById };
   } catch (err) {
@@ -191,10 +203,11 @@ function computeKpis(sd, events, periodStart, label) {
   const avgTurnaround = turnarounds.length ? Math.round(turnarounds.reduce((a, b) => a + b, 0) / turnarounds.length) : null;
 
   // 3/4. signed in period, new clients, MRR
-  const signed = sd.won.filter(p => inPeriod(p.wonDate));
+  const signedAt = p => p._signedAt || p.wonDate || null;
+  const signed = sd.won.filter(p => inPeriod(signedAt(p)));
   const newClients = signed.filter(p => p.isNewClient);
   const mrr = signed.reduce((s, p) => s + monthly(p), 0);
-  const daysToSign = signed.filter(p => p.wonDate && sentDate(p)).map(p => (new Date(p.wonDate) - new Date(sentDate(p))) / DAY);
+  const daysToSign = signed.filter(p => signedAt(p) && sentDate(p)).map(p => (new Date(signedAt(p)) - new Date(sentDate(p))) / DAY);
   const avgDaysToSign = daysToSign.length ? Math.round(daysToSign.reduce((a, b) => a + b, 0) / daysToSign.length) : null;
 
   // 5. conversion — proposals sent in the last 90 days that have closed either way
@@ -203,20 +216,32 @@ function computeKpis(sd, events, periodStart, label) {
   const closedLost = sd.lost.filter(p => sentDate(p) && new Date(sentDate(p)) >= window).length;
   const conversion = closedWon + closedLost > 0 ? pct(closedWon, closedWon + closedLost) : null;
 
-  // 6. signature -> kickstart: won, not yet started
-  const awaitingKickstart = sd.won
-    .filter(p => p.wonDate && !p.actualStart)
-    .map(p => ({ name: clientName(p), owner: owner(p), won: p.wonDate, wd: workingDaysBetween(p.wonDate, now()), planned: p.plannedStart, monthly: monthly(p) }))
-    .sort((a, b) => b.wd - a.wd);
-  const kickstartOverdue = awaitingKickstart.filter(k => k.wd > TARGETS.kickstartWorkingDays);
-  const kickstartedInPeriod = sd.won.filter(p => inPeriod(p.actualStart) && p.wonDate);
-  const kickstartWds = kickstartedInPeriod.map(p => workingDaysBetween(p.wonDate, p.actualStart));
+  // 6. signature -> kickstart. Socket's actualStart is the service start date, not the kickstart
+  //    meeting, so we look for a calendar event with "kickstart" + the client's name.
+  const norm = t => String(t || "").toLowerCase().replace(/\b(ltd|limited|llp|plc|co|company|the|and|&)\b/g, " ").replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(w => w.length > 2);
+  const kickEvents = events.filter(e => isKickstart(e) && !e.isCancelled);
+  const findKickstart = p => {
+    const words = norm(clientName(p));
+    if (!words.length) return null;
+    return kickEvents.find(e => { const subj = norm(e.subject).join(" "); return words.some(w => subj.includes(w)); }) || null;
+  };
+  const recentWon = sd.won.filter(p => signedAt(p) && new Date(signedAt(p)) >= daysAgo(90));
+  const kickstartRows = recentWon.map(p => {
+    const ev = findKickstart(p);
+    const evDate = ev ? new Date(ev.start.dateTime) : null;
+    const held = evDate && evDate < now();
+    return { name: clientName(p), owner: owner(p), won: signedAt(p), wd: workingDaysBetween(signedAt(p), now()), monthly: monthly(p), kickstart: evDate, held, wdToKick: evDate ? workingDaysBetween(signedAt(p), evDate) : null };
+  });
+  const awaitingKickstart = kickstartRows.filter(r => !r.held).sort((a, b) => b.wd - a.wd);
+  const kickstartOverdue = awaitingKickstart.filter(r => !r.kickstart && r.wd > TARGETS.kickstartWorkingDays);
+  const kickstartedInPeriod = kickstartRows.filter(r => r.held && inPeriod(r.kickstart.toISOString()));
+  const kickstartWds = kickstartedInPeriod.map(r => r.wdToKick);
   const avgKickstartWd = kickstartWds.length ? Math.round(kickstartWds.reduce((a, b) => a + b, 0) / kickstartWds.length) : null;
 
-  // 7. kickstart -> first service: watchlist of starts in last 30 days (delivery tracked outside Socket)
-  const firstServiceWatch = sd.won
-    .filter(p => p.actualStart && daysSince(p.actualStart) <= TARGETS.firstServiceDays)
-    .map(p => ({ name: clientName(p), started: p.actualStart, days: daysSince(p.actualStart) }))
+  // 7. kickstart -> first service: watchlist of kickstarts held in the last 30 days (delivery tracked in Karbon)
+  const firstServiceWatch = kickstartRows
+    .filter(r => r.held && daysSince(r.kickstart.toISOString()) <= TARGETS.firstServiceDays)
+    .map(r => ({ name: r.name, started: r.kickstart, days: daysSince(r.kickstart.toISOString()) }))
     .sort((a, b) => b.days - a.days);
 
   // pending list
@@ -293,13 +318,14 @@ function calendarTable(events, showDay) {
 function kickstartTable(list) {
   if (!list.length) return muted("Nothing awaiting kickstart.");
   return table(
-    [{ label: "Client" }, { label: "Owner" }, { label: "Signed" }, { label: "MRR", right: true }, { label: "Working days", right: true }],
+    [{ label: "Client" }, { label: "Owner" }, { label: "Signed" }, { label: "MRR", right: true }, { label: "Kickstart" }, { label: "Working days", right: true }],
     list.map(k => [
       { text: k.name },
       { text: k.owner, color: C.grey },
       { text: fmtDate(k.won), nowrap: true },
       { text: gbp(k.monthly) },
-      { text: `${k.wd}`, bold: true, color: k.wd > TARGETS.kickstartWorkingDays ? C.red : k.wd > 7 ? C.amber : C.green },
+      { text: k.kickstart ? `Booked ${fmtDate(k.kickstart)}` : "Not booked", color: k.kickstart ? C.green : C.red, bold: !k.kickstart, nowrap: true },
+      { text: `${k.wd}`, bold: true, color: k.kickstart ? C.green : k.wd > TARGETS.kickstartWorkingDays ? C.red : k.wd > 7 ? C.amber : C.green },
     ])
   );
 }
@@ -346,7 +372,9 @@ function kpiSection(k, periodName) {
 }
 function actionsSection(k, todaysEvents) {
   const items = [];
-  if (k.kickstartOverdue.length) items.push(`<strong style="color:${C.red}">Book kickstart</strong> for ${k.kickstartOverdue.slice(0, 3).map(x => escapeHtml(x.name)).join(", ")}${k.kickstartOverdue.length > 3 ? ` +${k.kickstartOverdue.length - 3}` : ""} — over ${TARGETS.kickstartWorkingDays} working days since signature`);
+  if (k.kickstartOverdue.length) items.push(`<strong style="color:${C.red}">Book kickstart</strong> for ${k.kickstartOverdue.slice(0, 3).map(x => escapeHtml(x.name)).join(", ")}${k.kickstartOverdue.length > 3 ? ` +${k.kickstartOverdue.length - 3}` : ""} — over ${TARGETS.kickstartWorkingDays} working days since signature, nothing in the diary`);
+  const unbooked = k.awaitingKickstart.filter(x => !x.kickstart && x.wd <= TARGETS.kickstartWorkingDays);
+  if (unbooked.length) items.push(`<strong>Book kickstart</strong> for ${unbooked.slice(0, 3).map(x => escapeHtml(x.name)).join(", ")}${unbooked.length > 3 ? ` +${unbooked.length - 3}` : ""} — signed recently, not yet in the diary`);
   const fresh = k.pendingList.filter(p => p.days >= 3 && p.days <= 14);
   if (fresh.length) items.push(`<strong>Chase</strong> ${fresh.slice(0, 3).map(x => escapeHtml(x.name)).join(", ")}${fresh.length > 3 ? ` +${fresh.length - 3}` : ""} — proposal sent 3–14 days ago, follow up before it stalls`);
   if (k.stalled.length) items.push(`<strong>Close out</strong> ${k.stalled.length} stalled proposals (&gt;14d) — chase once more or mark declined/expired in Socket so the pipeline reflects live opportunities`);
@@ -361,9 +389,9 @@ function actionsSection(k, todaysEvents) {
 // Emails
 // ---------------------------------------------------------------------------
 async function buildDailyEmail() {
-  const daysBack = Math.floor((now() - startOfMonth()) / DAY) + 1;
-  const [sd, events] = await Promise.all([getSocketData(), getCalendarEvents(1, daysBack)]);
-  const today = events.filter(e => { const s = new Date(e.start.dateTime); const t0 = new Date(); t0.setHours(0, 0, 0, 0); return s >= t0; });
+  const daysBack = Math.max(Math.floor((now() - startOfMonth()) / DAY) + 1, 60);
+  const [sd, events] = await Promise.all([getSocketData(), getCalendarEvents(21, daysBack)]);
+  const today = events.filter(e => { const s = new Date(e.start.dateTime); const t0 = new Date(); t0.setHours(0, 0, 0, 0); const t1 = new Date(t0); t1.setDate(t1.getDate() + 1); return s >= t0 && s < t1; });
   const k = computeKpis(sd, events, startOfMonth(), "MTD");
 
   const statsHtml =
@@ -384,8 +412,9 @@ async function buildDailyEmail() {
 
 async function buildWeeklyEmail() {
   const monthBack = Math.floor((now() - startOfMonth()) / DAY) + 1;
-  const [sd, events] = await Promise.all([getSocketData(), getCalendarEvents(7, Math.max(monthBack, 7))]);
-  const week = events.filter(e => new Date(e.start.dateTime) >= startOfWeek());
+  const [sd, events] = await Promise.all([getSocketData(), getCalendarEvents(21, Math.max(monthBack, 60))]);
+  const weekEnd = new Date(startOfWeek()); weekEnd.setDate(weekEnd.getDate() + 7);
+  const week = events.filter(e => { const s = new Date(e.start.dateTime); return s >= startOfWeek() && s < weekEnd; });
   const kw = computeKpis(sd, events, daysAgo(7), "last 7d");
   const km = computeKpis(sd, events, startOfMonth(), "MTD");
 
@@ -420,7 +449,7 @@ async function buildMonthlyEmail() {
   const d = now();
   const prevStart = new Date(d.getFullYear(), d.getMonth() - 1, 1);
   const daysBack = Math.floor((d - prevStart) / DAY) + 1;
-  const [sd, events] = await Promise.all([getSocketData(), getCalendarEvents(1, Math.min(daysBack, 62))]);
+  const [sd, events] = await Promise.all([getSocketData(), getCalendarEvents(21, Math.min(daysBack, 62))]);
   const k = computeKpis(sd, events, prevStart, "month");
   const monthName = prevStart.toLocaleString("en-GB", { month: "long", year: "numeric" });
 
