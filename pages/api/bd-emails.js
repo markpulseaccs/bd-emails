@@ -4,6 +4,10 @@ import { Resend } from "resend";
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const CRON_SECRET = process.env.CRON_SECRET;
 const SOCKET_API_KEY = process.env.SOCKET_API_KEY;
+const MS_TENANT_ID = process.env.MS_TENANT_ID;
+const MS_CLIENT_ID = process.env.MS_CLIENT_ID;
+const MS_CLIENT_SECRET = process.env.MS_CLIENT_SECRET;
+const CALENDAR_MAILBOX = "mark@pulse-accountants.co.uk";
  
 // Legacy clients
 const LEGACY_CLIENTS = [
@@ -41,29 +45,21 @@ function buildEmailHtml(opts) {
  
 async function getSocketProposals() {
   try {
-    console.log("Socket API Key:", SOCKET_API_KEY ? "SET" : "MISSING");
     const response = await fetch("https://app.usesocket.com/api/v1/proposals", {
       headers: { Authorization: `Bearer ${SOCKET_API_KEY}` },
     });
-    console.log("Socket response status:", response.status);
     const data = await response.json();
     
     let proposals = [];
     if (Array.isArray(data)) {
       proposals = data;
     } else if (data && typeof data === "object") {
-      console.log("Socket response keys:", Object.keys(data).join(", "));
       const arrKey = Object.keys(data).find(k => Array.isArray(data[k]));
       proposals = arrKey ? data[arrKey] : [];
     }
-    console.log("Socket response total:", proposals.length);
     
-    if (proposals.length > 0) {
-      console.log("First proposal status:", proposals[0].status);
-    }
     
     proposals = proposals.filter(p => !p.isHistorical);
-    console.log("Live (non-historical) proposals:", proposals.length);
  
     const discovery = proposals.filter(p => {
       const s = (p.status || "").toUpperCase();
@@ -73,11 +69,7 @@ async function getSocketProposals() {
     const signed = proposals.filter(p => ["WON", "WON_CLIENT", "WON_INTERNAL"].includes((p.status || "").toUpperCase()));
     const active = proposals.filter(p => (p.status || "").toUpperCase() === "ACTIVE");
     
-    console.log("Filtered counts:", { discovery: discovery.length, review: review.length, signed: signed.length, active: active.length });
     
-    if (proposals.length > 0) {
-      console.log("First proposal keys:", Object.keys(proposals[0]).join(", "));
-    }
  
     const now = new Date();
     const getDate = p => new Date(p.lastSentAt || p.createdAt || now);
@@ -91,14 +83,10 @@ async function getSocketProposals() {
       return x.name || [x.firstName, x.lastName].filter(Boolean).join(" ") || x.email || "";
     };
     const getOwner = p => personName(p.assignee) || personName(p.owner) || personName(p.clientOwner) || personName(p.clientManager) || "—";
-    if (discovery.length > 0) {
-      const d = discovery[0];
-      console.log("Pending proposal people:", JSON.stringify({ owner: d.owner, assignee: d.assignee, clientOwner: d.clientOwner, clientManager: d.clientManager }));
-    }
     const daysOld = p => Math.floor((now - getDate(p)) / (24 * 60 * 60 * 1000));
  
     const pendingList = discovery
-      .map(p => ({ name: getName(p), owner: getOwner(p), days: daysOld(p), annual: p.annualPrice || 0, oneOff: p.oneOffPrice || 0 }))
+      .map(p => ({ name: getName(p), owner: getOwner(p), days: daysOld(p), monthly: p.recurringPrice || p.price || 0, oneOff: p.oneOffPrice || 0 }))
       .sort((a, b) => b.days - a.days);
  
     const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
@@ -117,10 +105,77 @@ function pendingTable(list) {
   if (!list || list.length === 0) return `<p style="font-size:13px; color:#64748b; margin:6px 0;">No pending proposals.</p>`;
   const rows = list.map(p => {
     const color = p.days > 30 ? "#dc2626" : p.days > 14 ? "#b45309" : "#047857";
-    const value = p.annual ? `£${Number(p.annual).toLocaleString("en-GB")}/yr` : p.oneOff ? `£${Number(p.oneOff).toLocaleString("en-GB")} one-off` : "—";
+    const parts = [];
+    if (p.monthly) parts.push(`£${Number(p.monthly).toLocaleString("en-GB")}/mo`);
+    if (p.oneOff) parts.push(`£${Number(p.oneOff).toLocaleString("en-GB")} one-off`);
+    const value = parts.length ? parts.join(" + ") : "—";
     return `<tr><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#374151;">${escapeHtml(p.name)}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#64748b;">${escapeHtml(p.owner)}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#374151; text-align:right;">${value}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; font-weight:700; color:${color}; text-align:right;">${p.days}d</td></tr>`;
   }).join("");
   return `<table cellpadding="0" cellspacing="0" style="width:100%; margin:6px 0; border-collapse:collapse;"><tr><th style="text-align:left; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Client</th><th style="text-align:left; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Owner</th><th style="text-align:right; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Value</th><th style="text-align:right; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Age</th></tr>${rows}</table>`;
+}
+ 
+async function getMicrosoftAccessToken() {
+  if (!MS_TENANT_ID || !MS_CLIENT_ID || !MS_CLIENT_SECRET) return null;
+  try {
+    const response = await fetch(`https://login.microsoftonline.com/${MS_TENANT_ID}/oauth2/v2.0/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: MS_CLIENT_ID,
+        client_secret: MS_CLIENT_SECRET,
+        scope: "https://graph.microsoft.com/.default",
+        grant_type: "client_credentials",
+      }).toString(),
+    });
+    const data = await response.json();
+    if (!data.access_token) console.error("MS auth failed:", data.error, data.error_description);
+    return data.access_token || null;
+  } catch (err) {
+    console.error("MS auth error:", err.message);
+    return null;
+  }
+}
+ 
+async function getCalendarEvents(days = 1) {
+  try {
+    const token = await getMicrosoftAccessToken();
+    if (!token) return [];
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + days);
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(CALENDAR_MAILBOX)}/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}&$orderby=start/dateTime&$top=50&$select=subject,start,end,location,isAllDay,isCancelled,organizer`;
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${token}`, Prefer: 'outlook.timezone="Europe/London"' },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      console.error("Graph calendar error:", res.status, body.substring(0, 300));
+      return [];
+    }
+    const data = await res.json();
+    return (data.value || []).filter(e => !e.isCancelled);
+  } catch (err) {
+    console.error("Calendar error:", err.message);
+    return [];
+  }
+}
+ 
+function calendarTable(events, showDay) {
+  if (!events || events.length === 0) return `<p style="font-size:13px; color:#64748b; margin:6px 0;">No meetings scheduled.</p>`;
+  const fmtTime = iso => {
+    const d = new Date(iso);
+    return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  };
+  const fmtDay = iso => new Date(iso).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+  const rows = events.map(e => {
+    const when = e.isAllDay ? "All day" : `${fmtTime(e.start.dateTime)}–${fmtTime(e.end.dateTime)}`;
+    const day = showDay ? `<td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#64748b; white-space:nowrap;">${fmtDay(e.start.dateTime)}</td>` : "";
+    const loc = e.location && e.location.displayName ? escapeHtml(e.location.displayName) : "";
+    return `<tr>${day}<td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#1d1a4d; font-weight:700; white-space:nowrap;">${when}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#374151;">${escapeHtml(e.subject || "(no subject)")}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#64748b;">${loc}</td></tr>`;
+  }).join("");
+  const dayHead = showDay ? `<th style="text-align:left; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Day</th>` : "";
+  return `<table cellpadding="0" cellspacing="0" style="width:100%; margin:6px 0; border-collapse:collapse;"><tr>${dayHead}<th style="text-align:left; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Time</th><th style="text-align:left; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Meeting</th><th style="text-align:left; padding:5px 8px; font-size:11px; color:#64748b; border-bottom:2px solid #e2e8f0;">Where</th></tr>${rows}</table>`;
 }
  
 async function sendEmail(subject, html) {
@@ -145,18 +200,18 @@ async function sendEmail(subject, html) {
 }
  
 async function buildDailyEmail() {
-  const { discovery, review, signed, active, stalled, pendingList } = await getSocketProposals();
+  const [{ discovery, review, signed, active, stalled, pendingList }, events] = await Promise.all([getSocketProposals(), getCalendarEvents(1)]);
   const legacyStatus = LEGACY_CLIENTS.filter(c => c.status === "pending").length;
   
   const statsHtml = `${statCell("In Discovery", String(discovery), "#1d1a4d")}${statCell("In Review", String(review), "#b45309")}${statCell("Stalled", String(stalled), "#dc2626")}${statCell("Active", String(active), "#047857")}`;
   
-  const bodyHtml = `<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pipeline Status</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Signed in last 30 days (awaiting kickstart): <strong>${signed}</strong></li><li>Proposals in review (⚠️ ${stalled} overdue): <strong>${review}</strong></li><li>New discovery conversations: <strong>${discovery}</strong></li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pending Proposals (${pendingList.length}) — oldest first</h3>${pendingTable(pendingList)}<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Legacy Client Outreach</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Pending contact: <strong>${legacyStatus}/16</strong></li><li>Total value at risk: <strong>£326k</strong></li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Today's Actions</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Follow up on ${stalled} stalled proposals</li><li>Contact ${Math.min(3, legacyStatus)} legacy clients</li><li>Coordinate kickstart meetings</li></ul>`;
+  const bodyHtml = `<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Today's Calendar (${events.length})</h3>${calendarTable(events, false)}<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pipeline Status</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Signed in last 30 days (awaiting kickstart): <strong>${signed}</strong></li><li>Proposals in review (⚠️ ${stalled} overdue): <strong>${review}</strong></li><li>New discovery conversations: <strong>${discovery}</strong></li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pending Proposals (${pendingList.length}) — oldest first</h3>${pendingTable(pendingList)}<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Legacy Client Outreach</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Pending contact: <strong>${legacyStatus}/16</strong></li><li>Total value at risk: <strong>£326k</strong></li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Today's Actions</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Follow up on ${stalled} stalled proposals</li><li>Contact ${Math.min(3, legacyStatus)} legacy clients</li><li>Coordinate kickstart meetings</li></ul>`;
   
   return buildEmailHtml({ title: "BD Daily Priorities", subtitle: `${new Date().toLocaleDateString("en-GB")}`, logoUrl: "https://pulse-dashboard-7zua.vercel.app/pulse-logo.png", statsHtml, bodyHtml, footerNote: "Source: BD pipeline tracker. Generated automatically." });
 }
  
 async function buildWeeklyEmail() {
-  const { discovery, review, signed, active, stalled } = await getSocketProposals();
+  const [{ discovery, review, signed, active, stalled }, events] = await Promise.all([getSocketProposals(), getCalendarEvents(7)]);
   const legacyContacted = LEGACY_CLIENTS.filter(c => c.status !== "pending").length;
   const conversionRate = discovery + review + signed > 0 ? Math.round((signed / (discovery + review + signed)) * 100) : 0;
   
@@ -164,7 +219,7 @@ async function buildWeeklyEmail() {
   
   const weekOf = new Date(new Date().setDate(new Date().getDate() - new Date().getDay() + 1)).toLocaleDateString("en-GB");
   
-  const bodyHtml = `<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pipeline Movement</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Active discovery: <strong>${discovery}</strong></li><li>Proposals in review: <strong>${review}</strong> (⚠️ ${stalled} stalled >14 days)</li><li>Signed & ready for kickstart: <strong>${signed}</strong></li><li>Active clients delivering: <strong>${active}</strong></li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">KPI Progress</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Proposal → Signature: <strong>${conversionRate}%</strong> (Target: 60%+)</li><li>Signature → Kickstart: Within 10 working days</li><li>Kickstart → Active: ${active} clients progressing (Target: 30 days)</li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Legacy Clients</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Contacted: <strong>${legacyContacted}/16</strong> (£${LEGACY_CLIENTS.filter(c => c.status !== "pending").reduce((s, c) => s + c.value, 0)}k value)</li><li>Pipeline value: <strong>£326k total</strong></li><li>Target: All contacted by 31 Dec</li></ul>`;
+  const bodyHtml = `<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">This Week's Meetings (${events.length})</h3>${calendarTable(events, true)}<h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Pipeline Movement</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Active discovery: <strong>${discovery}</strong></li><li>Proposals in review: <strong>${review}</strong> (⚠️ ${stalled} stalled >14 days)</li><li>Signed & ready for kickstart: <strong>${signed}</strong></li><li>Active clients delivering: <strong>${active}</strong></li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">KPI Progress</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Proposal → Signature: <strong>${conversionRate}%</strong> (Target: 60%+)</li><li>Signature → Kickstart: Within 10 working days</li><li>Kickstart → Active: ${active} clients progressing (Target: 30 days)</li></ul><h3 style="margin:16px 0 8px; font-size:14px; color:#1d1a4d; border-bottom:2px solid #e2e8f0; padding-bottom:4px;">Legacy Clients</h3><ul style="margin:6px 0; padding-left:20px; font-size:13px; color:#374151; line-height:1.6;"><li>Contacted: <strong>${legacyContacted}/16</strong> (£${LEGACY_CLIENTS.filter(c => c.status !== "pending").reduce((s, c) => s + c.value, 0)}k value)</li><li>Pipeline value: <strong>£326k total</strong></li><li>Target: All contacted by 31 Dec</li></ul>`;
   
   return buildEmailHtml({ title: "BD Weekly Summary", subtitle: `Week of ${weekOf}`, logoUrl: "https://pulse-dashboard-7zua.vercel.app/pulse-logo.png", statsHtml, bodyHtml, footerNote: "Source: BD pipeline tracker. Generated automatically." });
 }
@@ -219,4 +274,3 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
- 
