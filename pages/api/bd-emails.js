@@ -80,21 +80,27 @@ async function getSocketProposals() {
     const personName = x => {
       if (!x) return "";
       if (typeof x === "string") return x;
-      return x.name || [x.firstName, x.lastName].filter(Boolean).join(" ") || x.email || "";
+      return x.name || x.fullName || x.displayName || [x.firstName, x.lastName].filter(Boolean).join(" ") || x.email || "";
     };
-    const getOwner = p => personName(p.author) || personName(p.assignee) || personName(p.owner) || personName(p.clientOwner) || personName(p.clientManager) || "—";
-
-    // DIAG (remove once owner resolved)
-    console.log("DIAG pending people:", JSON.stringify(discovery.map(p => ({ n: p.proposalNumber, o: p.owner, a: p.assignee, co: p.clientOwner, cm: p.clientManager }))).substring(0, 1500));
-    if (discovery.length > 0) {
+    // Author/owner only exists on the single-proposal endpoint, so fetch detail for each pending proposal in batches.
+    const ownerById = {};
+    const fetchDetail = async p => {
       try {
-        const d = await fetch(`https://app.usesocket.com/api/v1/proposals/${discovery[0].id}`, { headers: { Authorization: `Bearer ${SOCKET_API_KEY}` } });
-        const dj = await d.json();
-        const detail = dj.data || dj;
-        console.log("DIAG detail keys:", Object.keys(detail).join(", "));
-        console.log("DIAG detail people:", JSON.stringify({ author: detail.author, owner: detail.owner, assignee: detail.assignee, createdBy: detail.createdBy, user: detail.user }).substring(0, 600));
-      } catch (e) { console.log("DIAG detail error:", e.message); }
+        const r = await fetch(`https://app.usesocket.com/api/v1/proposals/${p.id}`, { headers: { Authorization: `Bearer ${SOCKET_API_KEY}` } });
+        if (!r.ok) return;
+        const j = await r.json();
+        const d = j.data || j;
+        ownerById[p.id] = personName(d.creator) || personName(d.owner) || personName(d.assignedTo) || personName(d.assignee) || "";
+        if (!ownerById[p.id] && !ownerById.__logged) {
+          ownerById.__logged = true;
+          console.log("Owner unresolved; detail people:", JSON.stringify({ creator: d.creator, owner: d.owner, assignedTo: d.assignedTo }).substring(0, 500));
+        }
+      } catch (e) { /* ignore */ }
+    };
+    for (let i = 0; i < discovery.length; i += 10) {
+      await Promise.all(discovery.slice(i, i + 10).map(fetchDetail));
     }
+    const getOwner = p => ownerById[p.id] || "—";
     const daysOld = p => Math.floor((now - getDate(p)) / (24 * 60 * 60 * 1000));
 
     const pendingList = discovery
