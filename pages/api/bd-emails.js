@@ -84,22 +84,32 @@ async function getSocketProposals() {
     };
     // Author/owner only exists on the single-proposal endpoint, so fetch detail for each pending proposal in batches.
     const ownerById = {};
+    let detailOk = 0, detailFail = 0, loggedFail = false, loggedShape = false;
     const fetchDetail = async p => {
       try {
-        const r = await fetch(`https://app.usesocket.com/api/v1/proposals/${p.id}`, { headers: { Authorization: `Bearer ${SOCKET_API_KEY}` } });
-        if (!r.ok) return;
+        const r = await fetch(`https://app.usesocket.com/api/v1/proposals/${p.id}`, { headers: { Authorization: `Bearer ${SOCKET_API_KEY}`, Accept: "application/json" } });
+        if (!r.ok) {
+          detailFail++;
+          if (!loggedFail) { loggedFail = true; console.log("Detail fetch failed:", r.status, (await r.text()).substring(0, 200)); }
+          return;
+        }
+        detailOk++;
         const j = await r.json();
         const d = j.data || j;
         ownerById[p.id] = personName(d.creator) || personName(d.owner) || personName(d.assignedTo) || personName(d.assignee) || "";
-        if (!ownerById[p.id] && !ownerById.__logged) {
-          ownerById.__logged = true;
+        if (!ownerById[p.id] && !loggedShape) {
+          loggedShape = true;
           console.log("Owner unresolved; detail people:", JSON.stringify({ creator: d.creator, owner: d.owner, assignedTo: d.assignedTo }).substring(0, 500));
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) {
+        detailFail++;
+        if (!loggedFail) { loggedFail = true; console.log("Detail fetch error:", e.message); }
+      }
     };
-    for (let i = 0; i < discovery.length; i += 10) {
-      await Promise.all(discovery.slice(i, i + 10).map(fetchDetail));
+    for (let i = 0; i < discovery.length; i += 3) {
+      await Promise.all(discovery.slice(i, i + 3).map(fetchDetail));
     }
+    console.log(`Owner lookup: ${detailOk} ok, ${detailFail} failed, ${Object.values(ownerById).filter(Boolean).length} resolved`);
     const getOwner = p => ownerById[p.id] || "—";
     const daysOld = p => Math.floor((now - getDate(p)) / (24 * 60 * 60 * 1000));
 
