@@ -127,6 +127,25 @@ const clientName = p => {
 const monthly = p => Number(p.recurringPrice || p.price || 0);
 const sentDate = p => p.lastSentAt || p.createdAt;
 
+// Socket dates arrive as ISO, "2026-09-24 11:33:34", or "24th September 2026"
+function parseSocketDate(v) {
+  if (!v) return null;
+  let t = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(t)) t = t.replace(" ", "T") + "Z";
+  t = t.replace(/(\d+)(st|nd|rd|th)\b/, "$1");
+  const d = new Date(t);
+  return isNaN(d) ? null : d.toISOString();
+}
+
+async function fetchWithRetry(url, opts, tries = 3) {
+  for (let i = 0; i < tries; i++) {
+    const r = await fetch(url, opts);
+    if (r.status !== 429 && r.status < 500) return r;
+    await new Promise(res => setTimeout(res, 400 * (i + 1)));
+  }
+  return fetch(url, opts);
+}
+
 const WON = ["WON", "WON_CLIENT", "WON_INTERNAL"];
 const LOST = ["DECLINED", "REJECTED", "LOST", "EXPIRED", "CANCELLED", "ARCHIVED", "WITHDRAWN"];
 
@@ -147,7 +166,7 @@ async function getSocketData() {
     const lost = all.filter(p => LOST.includes(st(p)));
 
     // one-off visibility of any statuses we're not classifying
-    const known = new Set(["PENDING", "SENT", "IN_REVIEW", "ACTIVE", ...WON, ...LOST]);
+    const known = new Set(["PENDING", "SENT", "IN_REVIEW", "ACTIVE", "DRAFT", ...WON, ...LOST]);
     const other = {};
     all.forEach(p => { const s = st(p); if (!known.has(s)) other[s] = (other[s] || 0) + 1; });
     if (Object.keys(other).length) console.log("Unclassified Socket statuses:", JSON.stringify(other));
@@ -160,13 +179,14 @@ async function getSocketData() {
     let loggedWon = false;
     const fetchDetail = async p => {
       try {
-        const r = await fetch(`https://app.usesocket.com/api/v1/proposals/${p.id}`, { headers: { Authorization: `Bearer ${SOCKET_API_KEY}`, Accept: "application/json" } });
-        if (!r.ok) return;
+        const r = await fetchWithRetry(`https://app.usesocket.com/api/v1/proposals/${p.id}`, { headers: { Authorization: `Bearer ${SOCKET_API_KEY}`, Accept: "application/json" } });
+        if (!r.ok) { if (!ownerById.__f) { ownerById.__f = 1; console.log("Detail fetch failed:", r.status); } return; }
         const j = await r.json();
         const d = j.data || j;
         ownerById[p.id] = personName(d.creator) || personName(d.owner) || personName(d.assignedTo) || personName(d.assignee) || "";
         const sig = d.signature || {};
-        const signedAt = d.wonDate || d.approvedAt || d.acceptedAt || sig.signedAt || sig.acceptedAt || sig.createdAt || sig.date || null;
+        const raw = d.wonDate || d.approvedAt || d.acceptedAt || sig.dateTime || sig.signedAt || sig.acceptedAt || sig.createdAt || sig.date || null;
+        const signedAt = parseSocketDate(raw);
         if (signedAt) signedById[p.id] = signedAt;
         if (WON.includes(String(d.status || "").toUpperCase()) && !loggedWon) {
           loggedWon = true;
@@ -177,7 +197,7 @@ async function getSocketData() {
     for (let i = 0; i < needDetail.length; i += 3) await Promise.all(needDetail.slice(i, i + 3).map(fetchDetail));
     // attach resolved signature date; fall back to updatedAt for won proposals with nothing better
     won.forEach(p => { p._signedAt = signedById[p.id] || p.wonDate || (recentWon.includes(p) ? p.updatedAt : null) || null; });
-    console.log(`Socket: ${all.length} live, ${pending.length} pending, ${won.length} won (${recentWon.length} recent), ${active.length} active, ${lost.length} lost; owners ${Object.values(ownerById).filter(Boolean).length}/${needDetail.length}, signed dates ${won.filter(p => p._signedAt).length}`);
+    console.log(`Socket: ${all.length} live, ${pending.length} pending, ${won.length} won (${recentWon.length} recent), ${active.length} active, ${lost.length} lost; owners ${Object.keys(ownerById).filter(k => k !== "__f" && ownerById[k]).length}/${needDetail.length}, signed dates ${won.filter(p => p._signedAt).length}`);
 
     return { pending, won, active, lost, all, ownerById };
   } catch (err) {
