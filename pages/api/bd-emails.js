@@ -82,11 +82,23 @@ async function getSocketProposals() {
       if (typeof x === "string") return x;
       return x.name || [x.firstName, x.lastName].filter(Boolean).join(" ") || x.email || "";
     };
-    const getOwner = p => personName(p.assignee) || personName(p.owner) || personName(p.clientOwner) || personName(p.clientManager) || "—";
+    const getOwner = p => personName(p.author) || personName(p.assignee) || personName(p.owner) || personName(p.clientOwner) || personName(p.clientManager) || "—";
+
+    // DIAG (remove once owner resolved)
+    console.log("DIAG pending people:", JSON.stringify(discovery.map(p => ({ n: p.proposalNumber, o: p.owner, a: p.assignee, co: p.clientOwner, cm: p.clientManager }))).substring(0, 1500));
+    if (discovery.length > 0) {
+      try {
+        const d = await fetch(`https://app.usesocket.com/api/v1/proposals/${discovery[0].id}`, { headers: { Authorization: `Bearer ${SOCKET_API_KEY}` } });
+        const dj = await d.json();
+        const detail = dj.data || dj;
+        console.log("DIAG detail keys:", Object.keys(detail).join(", "));
+        console.log("DIAG detail people:", JSON.stringify({ author: detail.author, owner: detail.owner, assignee: detail.assignee, createdBy: detail.createdBy, user: detail.user }).substring(0, 600));
+      } catch (e) { console.log("DIAG detail error:", e.message); }
+    }
     const daysOld = p => Math.floor((now - getDate(p)) / (24 * 60 * 60 * 1000));
 
     const pendingList = discovery
-      .map(p => ({ name: getName(p), owner: getOwner(p), days: daysOld(p), monthly: p.recurringPrice || p.price || 0, oneOff: p.oneOffPrice || 0 }))
+      .map(p => ({ name: getName(p), owner: getOwner(p), days: daysOld(p), monthly: p.recurringPrice || p.price || 0, oneOff: p.oneOffPrice || 0, alignment: p.alignmentFee || 0 }))
       .sort((a, b) => b.days - a.days);
 
     const twoWeeksAgo = new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000);
@@ -108,6 +120,7 @@ function pendingTable(list) {
     const parts = [];
     if (p.monthly) parts.push(`£${Number(p.monthly).toLocaleString("en-GB")}/mo`);
     if (p.oneOff) parts.push(`£${Number(p.oneOff).toLocaleString("en-GB")} one-off`);
+    if (p.alignment) parts.push(`£${Number(p.alignment).toLocaleString("en-GB")} alignment`);
     const value = parts.length ? parts.join(" + ") : "—";
     return `<tr><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#374151;">${escapeHtml(p.name)}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#64748b;">${escapeHtml(p.owner)}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#374151; text-align:right;">${value}</td><td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; font-weight:700; color:${color}; text-align:right;">${p.days}d</td></tr>`;
   }).join("");
