@@ -517,10 +517,23 @@ export default async function handler(req, res) {
   if (req.headers.authorization !== `Bearer ${CRON_SECRET}`) return res.status(401).json({ error: "Unauthorized" });
   const { type } = req.body || {};
   try {
-    const email = type === "daily" ? await buildDailyEmail() : type === "weekly" ? await buildWeeklyEmail() : type === "monthly" ? await buildMonthlyEmail() : null;
-    if (!email) return res.status(400).json({ error: "Invalid type" });
-    const sent = await sendEmail(email.subject, email.html);
-    return res.status(sent ? 200 : 500).json({ sent });
+    // "auto": daily every day, plus weekly on Mondays and monthly on the 1st — one scheduler job covers all three
+    let types = [type];
+    if (type === "auto") {
+      const d = now();
+      types = ["daily"];
+      if (d.getDay() === 1) types.push("weekly");
+      if (d.getDate() === 1) types.push("monthly");
+    }
+    const builders = { daily: buildDailyEmail, weekly: buildWeeklyEmail, monthly: buildMonthlyEmail };
+    if (!types.every(t => builders[t])) return res.status(400).json({ error: "Invalid type" });
+    const results = {};
+    for (const t of types) {
+      const email = await builders[t]();
+      results[t] = await sendEmail(email.subject, email.html);
+    }
+    const ok = Object.values(results).every(Boolean);
+    return res.status(ok ? 200 : 500).json({ sent: ok, results });
   } catch (err) {
     console.error("Handler error:", err.message);
     return res.status(500).json({ error: err.message });
