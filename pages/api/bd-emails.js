@@ -13,6 +13,9 @@ const CALENDAR_MAILBOX = "mark@pulse-accountants.co.uk";
 const CALENDAR_FEED_URL = process.env.CALENDAR_FEED_URL || "https://pulse-dashboard-7zua.vercel.app/api/cron/calendar-feed";
 const CALENDAR_FEED_TOKEN = process.env.CALENDAR_FEED_TOKEN;
 const BD_CONFIG_URL = process.env.BD_CONFIG_URL || CALENDAR_FEED_URL.replace(/calendar-feed$/, "bd-config");
+const BD_SNAPSHOT_URL = process.env.BD_SNAPSHOT_URL || CALENDAR_FEED_URL.replace(/calendar-feed$/, "bd-snapshot");
+// Comma-separated extra recipients for the Monday summary (e.g. Matt). Daily/monthly go to Mark only.
+const WEEKLY_CC = (process.env.BD_WEEKLY_CC || "").split(",").map(s => s.trim()).filter(Boolean);
 const LOGO_URL = "https://pulse-dashboard-7zua.vercel.app/pulse-logo.png";
 
 // ---------------------------------------------------------------------------
@@ -554,10 +557,18 @@ async function buildMonthlyEmail() {
 // ---------------------------------------------------------------------------
 // Send + handler
 // ---------------------------------------------------------------------------
-async function sendEmail(subject, html) {
+async function recordSnapshot() {
+  if (!CALENDAR_FEED_TOKEN) return;
+  try {
+    const res = await fetch(BD_SNAPSHOT_URL, { headers: { Authorization: `Bearer ${CALENDAR_FEED_TOKEN}` } });
+    console.log("bd-snapshot:", res.status, res.ok ? "stored" : (await res.text()).substring(0, 200));
+  } catch (err) { console.error("bd-snapshot error:", err.message); }
+}
+
+async function sendEmail(subject, html, cc = []) {
   try {
     const resend = new Resend(RESEND_API_KEY);
-    const { data, error } = await resend.emails.send({ from: "Mark Leighton <mark@pulse-accountants.co.uk>", to: "mark@pulse-accountants.co.uk", subject, html });
+    const { data, error } = await resend.emails.send({ from: "Mark Leighton <mark@pulse-accountants.co.uk>", to: "mark@pulse-accountants.co.uk", ...(cc.length ? { cc } : {}), subject, html });
     if (error) { console.error("Resend error:", error); return false; }
     console.log("Email sent:", data.id);
     return true;
@@ -582,8 +593,9 @@ export default async function handler(req, res) {
     if (!types.every(t => builders[t])) return res.status(400).json({ error: "Invalid type" });
     const results = {};
     for (const t of types) {
+      if (t === "monthly") await recordSnapshot(); // store last month's KPIs before reporting them
       const email = await builders[t]();
-      results[t] = await sendEmail(email.subject, email.html);
+      results[t] = await sendEmail(email.subject, email.html, t === "weekly" ? WEEKLY_CC : []);
     }
     const ok = Object.values(results).every(Boolean);
     return res.status(ok ? 200 : 500).json({ sent: ok, results });
