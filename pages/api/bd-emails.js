@@ -28,25 +28,43 @@ const TARGETS = {
   legacyDeadline: "2026-10-31",      // all legacy clients contacted by
 };
 
-// Legacy client bank (update status as you go: pending | contacted | proposal_sent | active | declined)
+// Legacy client bank. `status` is your manual view (pending | contacted | proposal_sent | active | declined);
+// `match` is how the client appears in Socket — if a proposal exists there, the status is upgraded automatically.
 const LEGACY_CLIENTS = [
-  { name: "Gills/Sonny Gill", value: 60, status: "contacted" },
-  { name: "David Whitehead", value: 60, status: "proposal_sent" },
-  { name: "Tom Byron", value: 50, status: "contacted" },
-  { name: "Tony Maughan", value: 40, status: "contacted" },
-  { name: "Craig Lynch", value: 40, status: "pending" },
-  { name: "PB Pub Solutions", value: 25, status: "pending" },
-  { name: "Marc Hardy", value: 10, status: "active" },
-  { name: "Chaser Communications", value: 8, status: "pending" },
-  { name: "Posithread/Simon Williamson", value: 6, status: "pending" },
-  { name: "OctoPos", value: 5.4, status: "proposal_sent" },
-  { name: "PLRB Ltd", value: 5.1, status: "pending" },
-  { name: "Ivy Stockton", value: 5.8, status: "pending" },
-  { name: "Bishop Auckland Pub Co", value: 3.84, status: "pending" },
-  { name: "Galaxee Global", value: 2.94, status: "pending" },
-  { name: "Amanda Scrimshaw", value: 2.4, status: "pending" },
-  { name: "Olo Marketing", value: 1.8, status: "pending" },
+  { name: "Gills/Sonny Gill", value: 60, status: "contacted", match: ["gills"] },
+  { name: "David Whitehead", value: 60, status: "proposal_sent", match: ["whitehead", "seaton rest", "kipper pudding"] },
+  { name: "Tom Byron", value: 50, status: "contacted", match: ["byron"] },
+  { name: "Tony Maughan", value: 40, status: "contacted", match: ["maughan", "ameva", "salutation"] },
+  { name: "Craig Lynch", value: 40, status: "pending", match: ["craig lynch"] },
+  { name: "PB Pub Solutions", value: 25, status: "pending", match: ["pb pub"] },
+  { name: "Marc Hardy", value: 10, status: "active", match: ["hardy", "heaton holdings", "whippet", "237 east"] },
+  { name: "Chaser Communications", value: 8, status: "pending", match: ["chaser"] },
+  { name: "Posithread/Simon Williamson", value: 6, status: "pending", match: ["posithread"] },
+  { name: "OctoPos", value: 5.4, status: "proposal_sent", match: ["octo-pos", "octopos", "octo pos"] },
+  { name: "PLRB Ltd", value: 5.1, status: "pending", match: ["plrb"] },
+  { name: "Ivy Stockton", value: 5.8, status: "pending", match: ["ivy stockton"] },
+  { name: "Bishop Auckland Pub Co", value: 3.84, status: "pending", match: ["bishop auckland pub"] },
+  { name: "Galaxee Global", value: 2.94, status: "pending", match: ["galaxee"] },
+  { name: "Amanda Scrimshaw", value: 2.4, status: "pending", match: ["scrimshaw"] },
+  { name: "Olo Marketing", value: 1.8, status: "pending", match: ["olo marketing"] },
 ];
+const STATUS_RANK = { pending: 0, contacted: 1, proposal_sent: 2, active: 3, declined: 1 };
+
+// Resolve each legacy client's effective status: manual status, upgraded by what Socket shows.
+function resolveLegacy(sd) {
+  const since = new Date("2026-09-01");
+  const nameOf = p => String(((p.primaryClient || (p.clients || [])[0]) || {}).name || p.title || "").toLowerCase();
+  const st = p => String(p.status || "").toUpperCase();
+  return LEGACY_CLIENTS.map(c => {
+    const hits = sd.all.filter(p => c.match.some(m => nameOf(p).includes(m)) && new Date(p.lastSentAt || p.createdAt || 0) >= since);
+    let socketStatus = null, socketNote = "";
+    if (hits.some(p => st(p) === "ACTIVE" || WON.includes(st(p)))) { socketStatus = "active"; socketNote = "signed in Socket"; }
+    else if (hits.some(p => ["PENDING", "SENT", "IN_REVIEW"].includes(st(p)))) { socketStatus = "proposal_sent"; socketNote = "proposal in Socket"; }
+    else if (hits.some(p => LOST.includes(st(p)))) { socketStatus = "declined"; socketNote = "declined in Socket"; }
+    const status = socketStatus && STATUS_RANK[socketStatus] > STATUS_RANK[c.status] ? socketStatus : c.status;
+    return { ...c, status, source: socketStatus && status === socketStatus ? socketNote : "manual" };
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -270,12 +288,13 @@ function computeKpis(sd, events, periodStart, label) {
     .sort((a, b) => b.days - a.days);
   const stalled = pendingList.filter(p => p.days > 14);
 
-  // 8. legacy
-  const legacyContacted = LEGACY_CLIENTS.filter(c => c.status !== "pending");
-  const legacyPending = LEGACY_CLIENTS.filter(c => c.status === "pending");
+  // 8. legacy — manual status upgraded by Socket
+  const legacy = resolveLegacy(sd);
+  const legacyContacted = legacy.filter(c => c.status !== "pending");
+  const legacyPending = legacy.filter(c => c.status === "pending");
   const legacyDaysLeft = Math.ceil((new Date(TARGETS.legacyDeadline) - now()) / DAY);
 
-  return { label, discoveryMeetings, kickstartMeetings, issued, avgTurnaround, signed, newClients, mrr, avgDaysToSign, conversion, closedWon, closedLost, awaitingKickstart, kickstartOverdue, avgKickstartWd, firstServiceWatch, pendingList, stalled, legacyContacted, legacyPending, legacyDaysLeft };
+  return { label, discoveryMeetings, kickstartMeetings, issued, avgTurnaround, signed, newClients, mrr, avgDaysToSign, conversion, closedWon, closedLost, awaitingKickstart, kickstartOverdue, avgKickstartWd, firstServiceWatch, pendingList, stalled, legacy, legacyContacted, legacyPending, legacyDaysLeft };
 }
 
 // ---------------------------------------------------------------------------
@@ -369,11 +388,11 @@ function pendingTable(list, cap) {
   );
   return html + (cap && list.length > cap ? muted(`…and ${list.length - cap} more.`) : "");
 }
-function legacyTable() {
+function legacyTable(legacy) {
   const badge = s => ({ pending: [C.red, "Not contacted"], contacted: [C.amber, "Contacted"], proposal_sent: [C.amber, "Proposal sent"], active: [C.green, "Active"], declined: [C.grey, "Declined"] }[s] || [C.grey, s]);
   return table(
-    [{ label: "Client" }, { label: "Value", right: true }, { label: "Status" }],
-    LEGACY_CLIENTS.map(c => { const [color, text] = badge(c.status); return [{ text: c.name }, { text: `£${c.value}k`, nowrap: true }, { text, color, bold: true }]; })
+    [{ label: "Client" }, { label: "Value", right: true }, { label: "Status" }, { label: "Source" }],
+    legacy.map(c => { const [color, text] = badge(c.status); return [{ text: c.name }, { text: `£${c.value}k`, nowrap: true }, { text, color, bold: true }, { text: c.source, color: C.grey }]; })
   );
 }
 function kpiSection(k, periodName) {
@@ -455,7 +474,7 @@ async function buildWeeklyEmail() {
     h3(`This Week's Meetings (${week.length})`) + calendarTable(week, true) +
     h3(`Awaiting Kickstart (${km.awaitingKickstart.length})`) + kickstartTable(km.awaitingKickstart) +
     h3("KPI Tracker — month to date") + kpiSection(km, "MTD") +
-    h3(`Legacy Client Bank — ${km.legacyContacted.length}/${LEGACY_CLIENTS.length} contacted, ${km.legacyDaysLeft} days to ${fmtDate(TARGETS.legacyDeadline)}`) + legacyTable() +
+    h3(`Legacy Client Bank — ${km.legacyContacted.length}/${LEGACY_CLIENTS.length} contacted, ${km.legacyDaysLeft} days to ${fmtDate(TARGETS.legacyDeadline)}`) + legacyTable(km.legacy) +
     h3("Monday housekeeping") + ul([
       "Send pipeline summary to management (forward this email or lift the KPI table)",
       "Update Socket: mark stalled proposals declined/expired, set actualStart on kickstarted clients",
@@ -487,7 +506,7 @@ async function buildMonthlyEmail() {
       `Awaiting kickstart: <strong>${k.awaitingKickstart.length}</strong> (${k.kickstartOverdue.length} overdue)`,
       `Active clients: <strong>${sd.active.length}</strong>`,
     ]) +
-    h3(`Legacy Client Bank — ${k.legacyContacted.length}/${LEGACY_CLIENTS.length} contacted`) + legacyTable() +
+    h3(`Legacy Client Bank — ${k.legacyContacted.length}/${LEGACY_CLIENTS.length} contacted`) + legacyTable(k.legacy) +
     h3("November gate review — evidence checklist") + ul([
       `${k.conversion != null && k.conversion >= TARGETS.conversionPct ? "✓" : "⚠️"} Conversion ≥ ${TARGETS.conversionPct}% (${k.conversion == null ? "n/a" : k.conversion + "%"})`,
       `${k.kickstartOverdue.length === 0 ? "✓" : "⚠️"} All kickstarts within ${TARGETS.kickstartWorkingDays} working days (${k.kickstartOverdue.length} overdue)`,
