@@ -12,6 +12,7 @@ const MS_CLIENT_SECRET = process.env.MS_CLIENT_SECRET;
 const CALENDAR_MAILBOX = "mark@pulse-accountants.co.uk";
 const CALENDAR_FEED_URL = process.env.CALENDAR_FEED_URL || "https://pulse-dashboard-7zua.vercel.app/api/cron/calendar-feed";
 const CALENDAR_FEED_TOKEN = process.env.CALENDAR_FEED_TOKEN;
+const BD_CONFIG_URL = process.env.BD_CONFIG_URL || CALENDAR_FEED_URL.replace(/calendar-feed$/, "bd-config");
 const LOGO_URL = "https://pulse-dashboard-7zua.vercel.app/pulse-logo.png";
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,36 @@ const LEGACY_CLIENTS = [
   { name: "Olo Marketing", value: 1.8, status: "pending", match: ["olo marketing"] },
 ];
 const STATUS_RANK = { pending: 0, contacted: 1, proposal_sent: 2, active: 3, declined: 1 };
+// Kickstarts resolved by the dashboard (own diary + owners' diaries + manual "mark held"): { proposalId: { date, held } }
+let KICKSTARTS = {};
+
+// Pull legacy bank + targets from pulse-dashboard (Supabase) so the /bd page and these emails
+// share one source of truth. Falls back to the hardcoded lists above if the feed is unavailable.
+async function loadBdConfig() {
+  if (!CALENDAR_FEED_TOKEN) return;
+  try {
+    const res = await fetch(BD_CONFIG_URL, { headers: { Authorization: `Bearer ${CALENDAR_FEED_TOKEN}` } });
+    if (!res.ok) { console.error("bd-config error:", res.status); return; }
+    const cfg = await res.json();
+    if (Array.isArray(cfg.legacy) && cfg.legacy.length) {
+      LEGACY_CLIENTS.length = 0;
+      cfg.legacy.forEach(c => LEGACY_CLIENTS.push({ name: c.name, value: Number(c.value_k) || 0, status: c.status || "pending", match: (c.match_terms || []).map(m => String(m).toLowerCase()), lastContact: c.last_contact || null }));
+    }
+    if (cfg.targets) {
+      const t = cfg.targets;
+      TARGETS.discoveryMeetingsPerMonth = t.discovery_meetings_per_month ?? null;
+      TARGETS.proposalsIssuedPerMonth = t.proposals_issued_per_month ?? null;
+      TARGETS.newClientsPerMonth = t.new_clients_per_month ?? null;
+      TARGETS.mrrSignedPerMonth = t.mrr_signed_per_month == null ? null : Number(t.mrr_signed_per_month);
+      TARGETS.conversionPct = t.conversion_pct ?? TARGETS.conversionPct;
+      TARGETS.kickstartWorkingDays = t.kickstart_working_days ?? TARGETS.kickstartWorkingDays;
+      TARGETS.firstServiceDays = t.first_service_days ?? TARGETS.firstServiceDays;
+      TARGETS.legacyDeadline = t.legacy_deadline || TARGETS.legacyDeadline;
+    }
+    KICKSTARTS = cfg.kickstarts && typeof cfg.kickstarts === "object" ? cfg.kickstarts : {};
+    console.log(`bd-config: ${LEGACY_CLIENTS.length} legacy clients, targets loaded, ${Object.keys(KICKSTARTS).length} kickstarts resolved`);
+  } catch (err) { console.error("bd-config error:", err.message); }
+}
 
 // Resolve each legacy client's effective status: manual status, upgraded by what Socket shows.
 function resolveLegacy(sd) {
@@ -265,9 +296,10 @@ function computeKpis(sd, events, periodStart, label) {
   };
   const recentWon = sd.won.filter(p => signedAt(p) && new Date(signedAt(p)) >= daysAgo(90));
   const kickstartRows = recentWon.map(p => {
-    const ev = findKickstart(p);
-    const evDate = ev ? new Date(ev.start.dateTime) : null;
-    const held = evDate && evDate < now();
+    const resolved = KICKSTARTS[p.id];
+    const ev = resolved ? null : findKickstart(p);
+    const evDate = resolved ? new Date(resolved.date) : ev ? new Date(ev.start.dateTime) : null;
+    const held = resolved ? !!resolved.held : (evDate && evDate < now());
     return { name: clientName(p), owner: owner(p), won: signedAt(p), wd: workingDaysBetween(signedAt(p), now()), monthly: monthly(p), kickstart: evDate, held, wdToKick: evDate ? workingDaysBetween(signedAt(p), evDate) : null };
   });
   const awaitingKickstart = kickstartRows.filter(r => !r.held).sort((a, b) => b.wd - a.wd);
@@ -476,6 +508,7 @@ async function buildWeeklyEmail() {
     h3("KPI Tracker — month to date") + kpiSection(km, "MTD") +
     h3(`Legacy Client Bank — ${km.legacyContacted.length}/${LEGACY_CLIENTS.length} contacted, ${km.legacyDaysLeft} days to ${fmtDate(TARGETS.legacyDeadline)}`) + legacyTable(km.legacy) +
     h3("Monday housekeeping") + ul([
+      `<a href="https://pulse-dashboard-7zua.vercel.app/bd" style="color:${C.navy}; font-weight:700;">Open the BD tracker</a> — update legacy statuses and targets there, not in code`,
       "Send pipeline summary to management (forward this email or lift the KPI table)",
       "Update Socket: mark stalled proposals declined/expired, set actualStart on kickstarted clients",
       "Update legacy client statuses in the tracker",
@@ -544,6 +577,7 @@ export default async function handler(req, res) {
       if (d.getDay() === 1) types.push("weekly");
       if (d.getDate() === 1) types.push("monthly");
     }
+    await loadBdConfig();
     const builders = { daily: buildDailyEmail, weekly: buildWeeklyEmail, monthly: buildMonthlyEmail };
     if (!types.every(t => builders[t])) return res.status(400).json({ error: "Invalid type" });
     const results = {};
