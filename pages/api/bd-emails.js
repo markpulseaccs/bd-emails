@@ -57,6 +57,8 @@ const STATUS_RANK = { pending: 0, contacted: 1, proposal_sent: 2, active: 3, dec
 let KICKSTARTS = {};
 // Kickstart -> first service, resolved by the dashboard from Karbon completions: { kickstarted, delivered, onTime, overdue, rows }
 let FIRST_SERVICE = null;
+// Slim Socket data pulled on a schedule by the dashboard (bd_cache). When present, no direct Socket calls are made.
+let SOCKET_SNAPSHOT = null;
 
 // Pull legacy bank + targets from pulse-dashboard (Supabase) so the /bd page and these emails
 // share one source of truth. Falls back to the hardcoded lists above if the feed is unavailable.
@@ -83,6 +85,7 @@ async function loadBdConfig() {
     }
     KICKSTARTS = cfg.kickstarts && typeof cfg.kickstarts === "object" ? cfg.kickstarts : {};
     FIRST_SERVICE = cfg.firstService && typeof cfg.firstService === "object" ? cfg.firstService : null;
+    if (cfg.socket && Array.isArray(cfg.socket.all) && cfg.socket.all.length) { SOCKET_SNAPSHOT = cfg.socket; console.log(`bd-config: socket snapshot ${cfg.socket.all.length} proposals as of ${cfg.socket.updatedAt || "?"}`); }
     console.log(`bd-config: ${LEGACY_CLIENTS.length} legacy clients, targets loaded, ${Object.keys(KICKSTARTS).length} kickstarts resolved`);
   } catch (err) { console.error("bd-config error:", err.message); }
 }
@@ -90,7 +93,7 @@ async function loadBdConfig() {
 // Resolve each legacy client's effective status: manual status, upgraded by what Socket shows.
 function resolveLegacy(sd) {
   const since = new Date("2026-09-01");
-  const nameOf = p => String(((p.primaryClient || (p.clients || [])[0]) || {}).name || p.title || "").toLowerCase();
+  const nameOf = p => String(p.name || ((p.primaryClient || (p.clients || [])[0]) || {}).name || p.title || "").toLowerCase();
   const st = p => String(p.status || "").toUpperCase();
   return LEGACY_CLIENTS.map(c => {
     const hits = sd.all.filter(p => c.match.some(m => nameOf(p).includes(m)) && new Date(p.lastSentAt || p.createdAt || 0) >= since);
@@ -176,10 +179,11 @@ const personName = x => {
   return x.name || x.fullName || x.displayName || [x.firstName, x.lastName].filter(Boolean).join(" ") || x.email || "";
 };
 const clientName = p => {
+  if (p.name) return p.name;
   const primary = p.primaryClient || (p.clients || []).find(c => c.isPrimary) || (p.clients || [])[0];
   return (primary && primary.name) || p.title || "Unnamed";
 };
-const monthly = p => Number(p.recurringPrice || p.price || 0);
+const monthly = p => Number(p.monthly != null ? p.monthly : (p.recurringPrice || p.price || 0));
 const sentDate = p => p.lastSentAt || p.createdAt;
 
 // Socket dates arrive as ISO, "2026-09-24 11:33:34", or "24th September 2026"
@@ -206,6 +210,10 @@ const LOST = ["DECLINED", "REJECTED", "LOST", "EXPIRED", "CANCELLED", "ARCHIVED"
 
 async function getSocketData() {
   const empty = { pending: [], won: [], active: [], lost: [], all: [], ownerById: {} };
+  if (SOCKET_SNAPSHOT) {
+    const { all, pending, won, active, lost, ownerById } = SOCKET_SNAPSHOT;
+    return { all, pending, won, active, lost, ownerById: ownerById || {} };
+  }
   if (!SOCKET_API_KEY) { console.error("SOCKET_API_KEY missing"); return empty; }
   try {
     const response = await fetch("https://app.usesocket.com/api/v1/proposals", { headers: { Authorization: `Bearer ${SOCKET_API_KEY}` } });
@@ -322,7 +330,7 @@ function computeKpis(sd, events, periodStart, label) {
 
   // pending list
   const pendingList = sd.pending
-    .map(p => ({ name: clientName(p), owner: owner(p), days: daysSince(sentDate(p)), monthly: monthly(p), oneOff: Number(p.oneOffPrice || 0), alignment: Number(p.alignmentFee || 0) }))
+    .map(p => ({ name: clientName(p), owner: owner(p), days: daysSince(sentDate(p)), monthly: monthly(p), oneOff: Number(p.oneOff != null ? p.oneOff : (p.oneOffPrice || 0)), alignment: Number(p.alignment != null ? p.alignment : (p.alignmentFee || 0)) }))
     .sort((a, b) => b.days - a.days);
   const stalled = pendingList.filter(p => p.days > 14);
 
