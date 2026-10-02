@@ -55,6 +55,8 @@ const LEGACY_CLIENTS = [
 const STATUS_RANK = { pending: 0, contacted: 1, proposal_sent: 2, active: 3, declined: 1 };
 // Kickstarts resolved by the dashboard (own diary + owners' diaries + manual "mark held"): { proposalId: { date, held } }
 let KICKSTARTS = {};
+// Kickstart -> first service, resolved by the dashboard from Karbon completions: { kickstarted, delivered, onTime, overdue, rows }
+let FIRST_SERVICE = null;
 
 // Pull legacy bank + targets from pulse-dashboard (Supabase) so the /bd page and these emails
 // share one source of truth. Falls back to the hardcoded lists above if the feed is unavailable.
@@ -80,6 +82,7 @@ async function loadBdConfig() {
       TARGETS.legacyDeadline = t.legacy_deadline || TARGETS.legacyDeadline;
     }
     KICKSTARTS = cfg.kickstarts && typeof cfg.kickstarts === "object" ? cfg.kickstarts : {};
+    FIRST_SERVICE = cfg.firstService && typeof cfg.firstService === "object" ? cfg.firstService : null;
     console.log(`bd-config: ${LEGACY_CLIENTS.length} legacy clients, targets loaded, ${Object.keys(KICKSTARTS).length} kickstarts resolved`);
   } catch (err) { console.error("bd-config error:", err.message); }
 }
@@ -439,7 +442,9 @@ function kpiSection(k, periodName) {
     kpiRow(`New recurring fees signed (${periodName})`, `${gbp(k.mrr)}/mo`, T.mrrSignedPerMonth == null ? "TBC" : `${gbp(T.mrrSignedPerMonth)}/mo`, T.mrrSignedPerMonth == null || k.mrr >= T.mrrSignedPerMonth, k.mrr >= (T.mrrSignedPerMonth || 0) * 0.6),
     kpiRow("Proposal → signature conversion (90d)", k.conversion == null ? "n/a" : `${k.conversion}% (${k.closedWon}W / ${k.closedLost}L)`, `${T.conversionPct}%+`, k.conversion == null || k.conversion >= T.conversionPct, (k.conversion || 0) >= T.conversionPct - 10),
     kpiRow("Signature → kickstart", `${k.kickstartOverdue.length} overdue of ${k.awaitingKickstart.length}${k.avgKickstartWd != null ? ` · avg ${k.avgKickstartWd} wd` : ""}`, `≤ ${T.kickstartWorkingDays} working days`, k.kickstartOverdue.length === 0, k.kickstartOverdue.length <= 2),
-    kpiRow("Kickstart → first service", `${k.firstServiceWatch.length} in first ${T.firstServiceDays}d (track in Karbon)`, `≤ ${T.firstServiceDays} days`, true, true),
+    FIRST_SERVICE
+      ? kpiRow("Kickstart → first service", `${FIRST_SERVICE.onTime}/${FIRST_SERVICE.kickstarted} on time · ${FIRST_SERVICE.overdue} overdue`, `≤ ${T.firstServiceDays} days`, FIRST_SERVICE.overdue === 0, FIRST_SERVICE.overdue <= 1)
+      : kpiRow("Kickstart → first service", `${k.firstServiceWatch.length} in first ${T.firstServiceDays}d (track in Karbon)`, `≤ ${T.firstServiceDays} days`, true, true),
     kpiRow("Legacy clients contacted", `${k.legacyContacted.length}/${LEGACY_CLIENTS.length} · ${k.legacyDaysLeft}d left`, `All by ${fmtDate(T.legacyDeadline)}`, k.legacyPending.length === 0, k.legacyContacted.length >= LEGACY_CLIENTS.length * 0.6),
   ];
   return kpiTable(rows);
@@ -452,6 +457,7 @@ function actionsSection(k, todaysEvents) {
   if (unbooked.length) items.push(`<strong>Book kickstart</strong> for ${names(unbooked)} — signed recently, not yet in the diary`);
   const fresh = k.pendingList.filter(p => p.days >= 3 && p.days <= 14);
   if (fresh.length) items.push(`<strong>Chase</strong> ${names(fresh)} — proposal sent 3–14 days ago, follow up before it stalls`);
+  if (FIRST_SERVICE && FIRST_SERVICE.overdue) items.push(`<strong style="color:${C.red}">First service overdue</strong> for ${FIRST_SERVICE.rows.filter(r => r.status === "overdue").map(r => escapeHtml(r.name)).join(", ")} — kickstarted over ${TARGETS.firstServiceDays} days ago, nothing completed in Karbon yet`);
   if (k.stalled.length) items.push(`<strong>Close out</strong> ${k.stalled.length} stalled proposals (&gt;14d) — chase once more or mark declined/expired in Socket so the pipeline reflects live opportunities`);
   if (k.legacyPending.length) items.push(`<strong>Legacy outreach</strong> — ${k.legacyPending.length} not yet contacted, ${k.legacyDaysLeft} days to ${fmtDate(TARGETS.legacyDeadline)}: ${names(k.legacyPending)}`);
   const kickToday = (todaysEvents || []).filter(e => /kick\s?-?start|discovery/i.test(e.subject || ""));
