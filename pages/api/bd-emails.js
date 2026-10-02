@@ -308,7 +308,7 @@ function computeKpis(sd, events, periodStart, label) {
     if (!words.length) return null;
     return kickEvents.find(e => { const subj = norm(e.subject).join(" "); return words.some(w => subj.includes(w)); }) || null;
   };
-  const recentWon = sd.won.filter(p => signedAt(p) && new Date(signedAt(p)) >= daysAgo(90));
+  const recentWon = sd.won.filter(p => signedAt(p) && new Date(signedAt(p)) >= daysAgo(90) && !(KICKSTARTS[p.id] && KICKSTARTS[p.id].notNeeded));
   const kickstartRows = recentWon.map(p => {
     const resolved = KICKSTARTS[p.id];
     const ev = resolved ? null : findKickstart(p);
