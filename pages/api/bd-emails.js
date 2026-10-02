@@ -92,7 +92,7 @@ async function loadBdConfig() {
 
 // Resolve each legacy client's effective status: manual status, upgraded by what Socket shows.
 function resolveLegacy(sd) {
-  const since = new Date("2026-09-01");
+  const since = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
   const nameOf = p => String(p.name || ((p.primaryClient || (p.clients || [])[0]) || {}).name || p.title || "").toLowerCase();
   const st = p => String(p.status || "").toUpperCase();
   return LEGACY_CLIENTS.map(c => {
