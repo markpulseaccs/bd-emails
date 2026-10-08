@@ -283,7 +283,7 @@ function computeKpis(sd, events, periodStart, label) {
   const kickstartMeetings = pastEvents.filter(isKickstart);
 
   // 2. proposals issued + turnaround (created -> sent)
-  const issued = sd.all.filter(p => inPeriod(p.lastSentAt));
+  const issued = sd.all.filter(p => inPeriod(sentDate(p)) && String(p.status || "").toUpperCase() !== "DRAFT");
   const turnarounds = issued.filter(p => p.createdAt && p.lastSentAt).map(p => (new Date(p.lastSentAt) - new Date(p.createdAt)) / DAY);
   const avgTurnaround = turnarounds.length ? Math.round(turnarounds.reduce((a, b) => a + b, 0) / turnarounds.length) : null;
 
@@ -293,6 +293,7 @@ function computeKpis(sd, events, periodStart, label) {
   const newClients = signed.filter(p => p.isNewClient);
   const mrr = signed.reduce((s, p) => s + monthly(p), 0);
   const daysToSign = signed.filter(p => signedAt(p) && sentDate(p)).map(p => (new Date(signedAt(p)) - new Date(sentDate(p))) / DAY);
+  const signedList = signed.map(p => ({ name: clientName(p), owner: owner(p), sent: sentDate(p), signed: signedAt(p), days: sentDate(p) ? Math.round((new Date(signedAt(p)) - new Date(sentDate(p))) / DAY) : null, monthly: monthly(p), oneOff: Number(p.oneOff != null ? p.oneOff : (p.oneOffPrice || 0)), isNewClient: !!p.isNewClient })).sort((a, b) => String(b.signed).localeCompare(String(a.signed)));
   const avgDaysToSign = daysToSign.length ? Math.round(daysToSign.reduce((a, b) => a + b, 0) / daysToSign.length) : null;
 
   // 5. conversion (7 Oct 2026 definition): of new-business proposals sent in the last 90 days that have had
@@ -350,7 +351,7 @@ function computeKpis(sd, events, periodStart, label) {
   const legacyPending = legacy.filter(c => c.status === "pending");
   const legacyDaysLeft = Math.ceil((new Date(TARGETS.legacyDeadline) - now()) / DAY);
 
-  return { label, discoveryMeetings, kickstartMeetings, issued, avgTurnaround, signed, newClients, mrr, avgDaysToSign, conversion, closedWon, closedLost, conversionBase, awaitingKickstart, kickstartOverdue, avgKickstartWd, firstServiceWatch, pendingList, stalled, legacy, legacyContacted, legacyPending, legacyDaysLeft };
+  return { label, discoveryMeetings, kickstartMeetings, issued, avgTurnaround, signed, newClients, mrr, avgDaysToSign, signedList, conversion, closedWon, closedLost, conversionBase, awaitingKickstart, kickstartOverdue, avgKickstartWd, firstServiceWatch, pendingList, stalled, legacy, legacyContacted, legacyPending, legacyDaysLeft };
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +411,22 @@ function calendarTable(events, showDay) {
 // ---------------------------------------------------------------------------
 // Sections
 // ---------------------------------------------------------------------------
+function signedTable(list) {
+  if (!list.length) return muted("Nothing signed in this period.");
+  return table(
+    [{ label: "Client" }, { label: "Type" }, { label: "Owner" }, { label: "Signed" }, { label: "Days", right: true }, { label: "Monthly", right: true }, { label: "One-off", right: true }],
+    list.map(r => [
+      { text: r.name },
+      { text: r.isNewClient ? "New" : "Existing", color: r.isNewClient ? C.navy : C.grey },
+      { text: r.owner, color: C.grey },
+      { text: fmtDate(r.signed), nowrap: true },
+      { text: r.days == null ? "—" : String(r.days), bold: true, color: r.days != null && r.days <= TARGETS.conversionDays ? C.green : C.amber },
+      { text: r.monthly ? `${gbp(r.monthly)}/mo` : "—", nowrap: true },
+      { text: r.oneOff ? gbp(r.oneOff) : "—" },
+    ])
+  );
+}
+
 function kickstartTable(list) {
   if (!list.length) return muted("Nothing awaiting kickstart.");
   return table(
@@ -530,6 +547,7 @@ async function buildWeeklyEmail() {
       `Signed: <strong>${kw.signed.length}</strong> (${kw.newClients.length} new clients, ${gbp(kw.mrr)}/mo recurring)${kw.avgDaysToSign != null ? ` · avg ${kw.avgDaysToSign}d proposal→signature` : ""}`,
       `Kickstarts held: <strong>${kw.kickstartMeetings.length}</strong> · still awaiting kickstart: <strong>${kw.awaitingKickstart.length}</strong> (${kw.kickstartOverdue.length} overdue)`,
     ]) +
+    h3(`Signed last 7 days (${kw.signedList.length}) — ${gbp(kw.mrr)}/mo recurring`) + signedTable(kw.signedList) +
     h3(`This Week's Meetings (${week.length})`) + calendarTable(week, true) +
     h3(`Awaiting Kickstart (${km.awaitingKickstart.length})`) + kickstartTable(km.awaitingKickstart) +
     h3("KPI Tracker — month to date") + kpiSection(km, "MTD") +
@@ -561,6 +579,7 @@ async function buildMonthlyEmail() {
 
   const bodyHtml =
     h3(`KPI Review — ${monthName}`) + kpiSection(k, "month") +
+    h3(`Signed in ${monthName} (${k.signedList.length}) — ${gbp(k.mrr)}/mo recurring`) + signedTable(k.signedList) +
     h3("Pipeline at month end") + ul([
       `Pending proposals: <strong>${k.pendingList.length}</strong> (${k.stalled.length} stalled &gt;14d)`,
       `Awaiting kickstart: <strong>${k.awaitingKickstart.length}</strong> (${k.kickstartOverdue.length} overdue)`,
