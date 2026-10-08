@@ -89,7 +89,7 @@ async function loadBdConfig() {
     }
     KICKSTARTS = cfg.kickstarts && typeof cfg.kickstarts === "object" ? cfg.kickstarts : {};
     FIRST_SERVICE = cfg.firstService && typeof cfg.firstService === "object" ? cfg.firstService : null;
-    TODO = Array.isArray(cfg.todo) ? cfg.todo : [];
+    TODO = Array.isArray(cfg.todo) ? cfg.todo : null; // null = feed didn't send it, so the section is left out
     if (cfg.socket && Array.isArray(cfg.socket.all) && cfg.socket.all.length) { SOCKET_SNAPSHOT = cfg.socket; console.log(`bd-config: socket snapshot ${cfg.socket.all.length} proposals as of ${cfg.socket.updatedAt || "?"}`); }
     console.log(`bd-config: ${LEGACY_CLIENTS.length} legacy clients, targets loaded, ${Object.keys(KICKSTARTS).length} kickstarts resolved`);
   } catch (err) { console.error("bd-config error:", err.message); }
@@ -529,7 +529,7 @@ async function buildDailyEmail() {
   const bodyHtml =
     h3(`Today's Calendar (${today.length})`) + calendarTable(today, false) +
     h3("Today's Actions") + actionsSection(k, today) +
-    h3(`Client To-Do (${TODO.length}) — kickstarts, check-ins and first service`) + todoSection() +
+    (TODO ? h3(`Client To-Do (${TODO.length}) — kickstarts, check-ins and first service`) + todoSection() : "") +
     h3(`Awaiting Kickstart (${k.awaitingKickstart.length}) — signature → kickstart target ${TARGETS.kickstartWorkingDays} working days`) + kickstartTable(k.awaitingKickstart) +
     h3(`Pending Proposals (${k.pendingList.length}) — oldest first`) + pendingTable(k.pendingList) +
     h3("KPI Tracker — month to date") + kpiSection(k, "MTD");
