@@ -58,6 +58,8 @@ const STATUS_RANK = { pending: 0, contacted: 1, proposal_sent: 2, active: 3, dec
 let KICKSTARTS = {};
 // Kickstart -> first service, resolved by the dashboard from Karbon completions: { kickstarted, delivered, onTime, overdue, rows }
 let FIRST_SERVICE = null;
+// Client journey to-do from the dashboard: [{ id, name, owner, action }] — same rules as the Client journey tab.
+let TODO = [];
 // Slim Socket data pulled on a schedule by the dashboard (bd_cache). When present, no direct Socket calls are made.
 let SOCKET_SNAPSHOT = null;
 
@@ -87,6 +89,7 @@ async function loadBdConfig() {
     }
     KICKSTARTS = cfg.kickstarts && typeof cfg.kickstarts === "object" ? cfg.kickstarts : {};
     FIRST_SERVICE = cfg.firstService && typeof cfg.firstService === "object" ? cfg.firstService : null;
+    TODO = Array.isArray(cfg.todo) ? cfg.todo : [];
     if (cfg.socket && Array.isArray(cfg.socket.all) && cfg.socket.all.length) { SOCKET_SNAPSHOT = cfg.socket; console.log(`bd-config: socket snapshot ${cfg.socket.all.length} proposals as of ${cfg.socket.updatedAt || "?"}`); }
     console.log(`bd-config: ${LEGACY_CLIENTS.length} legacy clients, targets loaded, ${Object.keys(KICKSTARTS).length} kickstarts resolved`);
   } catch (err) { console.error("bd-config error:", err.message); }
@@ -484,6 +487,13 @@ function kpiSection(k, periodName) {
   ];
   return kpiTable(rows);
 }
+// Client to-do, grouped by owner so it can be handed straight to the team.
+function todoSection() {
+  if (!TODO.length) return muted("Nothing outstanding on the client journey.");
+  const sorted = [...TODO].sort((a, b) => String(a.owner).localeCompare(String(b.owner)) || String(a.name).localeCompare(String(b.name)));
+  return ul(sorted.map(t => `<strong>${escapeHtml(t.owner || "Unassigned")}</strong> — ${escapeHtml(t.name)}: ${escapeHtml(t.action)}`));
+}
+
 function actionsSection(k, todaysEvents) {
   const items = [];
   const names = list => list.map(x => escapeHtml(x.name)).join(", ");
@@ -519,6 +529,7 @@ async function buildDailyEmail() {
   const bodyHtml =
     h3(`Today's Calendar (${today.length})`) + calendarTable(today, false) +
     h3("Today's Actions") + actionsSection(k, today) +
+    h3(`Client To-Do (${TODO.length}) — kickstarts, check-ins and first service`) + todoSection() +
     h3(`Awaiting Kickstart (${k.awaitingKickstart.length}) — signature → kickstart target ${TARGETS.kickstartWorkingDays} working days`) + kickstartTable(k.awaitingKickstart) +
     h3(`Pending Proposals (${k.pendingList.length}) — oldest first`) + pendingTable(k.pendingList) +
     h3("KPI Tracker — month to date") + kpiSection(k, "MTD");
