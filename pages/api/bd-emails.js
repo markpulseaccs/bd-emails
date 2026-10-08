@@ -58,8 +58,26 @@ const STATUS_RANK = { pending: 0, contacted: 1, proposal_sent: 2, active: 3, dec
 let KICKSTARTS = {};
 // Kickstart -> first service, resolved by the dashboard from Karbon completions: { kickstarted, delivered, onTime, overdue, rows }
 let FIRST_SERVICE = null;
-// Client journey to-do from the dashboard: [{ id, name, owner, action }] — same rules as the Client journey tab.
-let TODO = [];
+// Client journey to-do from the dashboard's bd-todo feed: [{ id, name, owner, action }]. null = feed unavailable today.
+let TODO = null;
+let TODO_ERROR = null;
+
+// Fetched separately from bd-config with a short timeout, so a slow to-do never stops the email going out.
+async function loadTodo() {
+  if (!CALENDAR_FEED_TOKEN) { TODO = null; TODO_ERROR = "not configured"; return; }
+  try {
+    const res = await fetch(BD_CONFIG_URL.replace(/bd-config$/, "bd-todo"), { headers: { Authorization: `Bearer ${CALENDAR_FEED_TOKEN}` }, signal: AbortSignal.timeout(12000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json();
+    if (!Array.isArray(body.todo)) throw new Error("feed did not return a to-do list");
+    TODO = body.todo;
+    TODO_ERROR = null;
+  } catch (err) {
+    TODO = null;
+    TODO_ERROR = err.message;
+    console.error("bd-todo error:", err.message);
+  }
+}
 // Slim Socket data pulled on a schedule by the dashboard (bd_cache). When present, no direct Socket calls are made.
 let SOCKET_SNAPSHOT = null;
 
@@ -89,7 +107,6 @@ async function loadBdConfig() {
     }
     KICKSTARTS = cfg.kickstarts && typeof cfg.kickstarts === "object" ? cfg.kickstarts : {};
     FIRST_SERVICE = cfg.firstService && typeof cfg.firstService === "object" ? cfg.firstService : null;
-    TODO = Array.isArray(cfg.todo) ? cfg.todo : null; // null = feed didn't send it, so the section is left out
     if (cfg.socket && Array.isArray(cfg.socket.all) && cfg.socket.all.length) { SOCKET_SNAPSHOT = cfg.socket; console.log(`bd-config: socket snapshot ${cfg.socket.all.length} proposals as of ${cfg.socket.updatedAt || "?"}`); }
     console.log(`bd-config: ${LEGACY_CLIENTS.length} legacy clients, targets loaded, ${Object.keys(KICKSTARTS).length} kickstarts resolved`);
   } catch (err) { console.error("bd-config error:", err.message); }
@@ -489,6 +506,7 @@ function kpiSection(k, periodName) {
 }
 // Client to-do, grouped by owner so it can be handed straight to the team.
 function todoSection() {
+  if (TODO === null) return muted(`To-do unavailable today (${escapeHtml(TODO_ERROR || "no response")}) — check the Client journey tab in pulse-dashboard before tasking anyone.`);
   if (!TODO.length) return muted("Nothing outstanding on the client journey.");
   const sorted = [...TODO].sort((a, b) => String(a.owner).localeCompare(String(b.owner)) || String(a.name).localeCompare(String(b.name)));
   return ul(sorted.map(t => `<strong>${escapeHtml(t.owner || "Unassigned")}</strong> — ${escapeHtml(t.name)}: ${escapeHtml(t.action)}`));
@@ -515,6 +533,7 @@ function actionsSection(k, todaysEvents) {
 // Emails
 // ---------------------------------------------------------------------------
 async function buildDailyEmail() {
+  await loadTodo();
   const daysBack = Math.max(Math.floor((now() - startOfMonth()) / DAY) + 1, 60);
   const [sd, events] = await Promise.all([getSocketData(), getCalendarEvents(21, daysBack)]);
   const today = events.filter(e => { const s = new Date(e.start.dateTime); const t0 = new Date(); t0.setHours(0, 0, 0, 0); const t1 = new Date(t0); t1.setDate(t1.getDate() + 1); return s >= t0 && s < t1; });
@@ -529,7 +548,7 @@ async function buildDailyEmail() {
   const bodyHtml =
     h3(`Today's Calendar (${today.length})`) + calendarTable(today, false) +
     h3("Today's Actions") + actionsSection(k, today) +
-    (TODO ? h3(`Client To-Do (${TODO.length}) — kickstarts, check-ins and first service`) + todoSection() : "") +
+    h3(TODO ? `Client To-Do (${TODO.length}) — kickstarts, check-ins and first service` : "Client To-Do") + todoSection() +
     h3(`Awaiting Kickstart (${k.awaitingKickstart.length}) — signature → kickstart target ${TARGETS.kickstartWorkingDays} working days`) + kickstartTable(k.awaitingKickstart) +
     h3(`Pending Proposals (${k.pendingList.length}) — oldest first`) + pendingTable(k.pendingList) +
     h3("KPI Tracker — month to date") + kpiSection(k, "MTD");
