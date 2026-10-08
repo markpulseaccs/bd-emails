@@ -26,7 +26,8 @@ const TARGETS = {
   proposalsIssuedPerMonth: null,     // e.g. 10
   newClientsPerMonth: null,          // e.g. 6
   mrrSignedPerMonth: null,           // e.g. 5000 (£)
-  conversionPct: 60,                 // proposal -> signature
+  conversionPct: 75,                 // % of proposals signed within conversionDays of sending (7 Oct 2026 meeting)
+  conversionDays: 14,
   kickstartWorkingDays: 10,          // signature -> kickstart
   firstServiceDays: 30,              // kickstart -> first service
   legacyDeadline: "2026-10-31",      // all legacy clients contacted by
@@ -79,6 +80,7 @@ async function loadBdConfig() {
       TARGETS.newClientsPerMonth = t.new_clients_per_month ?? null;
       TARGETS.mrrSignedPerMonth = t.mrr_signed_per_month == null ? null : Number(t.mrr_signed_per_month);
       TARGETS.conversionPct = t.conversion_pct ?? TARGETS.conversionPct;
+      TARGETS.conversionDays = t.conversion_days ?? TARGETS.conversionDays;
       TARGETS.kickstartWorkingDays = t.kickstart_working_days ?? TARGETS.kickstartWorkingDays;
       TARGETS.firstServiceDays = t.first_service_days ?? TARGETS.firstServiceDays;
       TARGETS.legacyDeadline = t.legacy_deadline || TARGETS.legacyDeadline;
@@ -293,11 +295,19 @@ function computeKpis(sd, events, periodStart, label) {
   const daysToSign = signed.filter(p => signedAt(p) && sentDate(p)).map(p => (new Date(signedAt(p)) - new Date(sentDate(p))) / DAY);
   const avgDaysToSign = daysToSign.length ? Math.round(daysToSign.reduce((a, b) => a + b, 0) / daysToSign.length) : null;
 
-  // 5. conversion — proposals sent in the last 90 days that have closed either way
+  // 5. conversion (7 Oct 2026 definition): of new-business proposals sent in the last 90 days that have had
+  //    `conversionDays` to be signed, the % signed within that many days of sending.
   const window = daysAgo(90);
-  const closedWon = sd.won.filter(p => sentDate(p) && new Date(sentDate(p)) >= window).length;
-  const closedLost = sd.lost.filter(p => sentDate(p) && new Date(sentDate(p)) >= window).length;
-  const conversion = closedWon + closedLost > 0 ? pct(closedWon, closedWon + closedLost) : null;
+  const convDays = TARGETS.conversionDays || 14;
+  const matureBy = daysAgo(convDays);
+  const isNB = p => p.isNewClient || !p.supersedes;
+  const sentT = p => sentDate(p) ? new Date(sentDate(p)).getTime() : null;
+  const base = [...sd.won, ...sd.lost, ...sd.pending].filter(p => { const t = sentT(p); return isNB(p) && t != null && t >= window.getTime() && t <= matureBy.getTime(); });
+  const quick = base.filter(p => { const sg = signedAt(p); return sg && new Date(sg).getTime() - sentT(p) <= convDays * DAY; });
+  const closedWon = quick.length;
+  const closedLost = base.length - quick.length;
+  const conversionBase = base.length;
+  const conversion = base.length > 0 ? pct(quick.length, base.length) : null;
 
   // 6. signature -> kickstart. Socket's actualStart is the service start date, not the kickstart
   //    meeting, so we look for a calendar event with "kickstart" + the client's name.
@@ -340,7 +350,7 @@ function computeKpis(sd, events, periodStart, label) {
   const legacyPending = legacy.filter(c => c.status === "pending");
   const legacyDaysLeft = Math.ceil((new Date(TARGETS.legacyDeadline) - now()) / DAY);
 
-  return { label, discoveryMeetings, kickstartMeetings, issued, avgTurnaround, signed, newClients, mrr, avgDaysToSign, conversion, closedWon, closedLost, awaitingKickstart, kickstartOverdue, avgKickstartWd, firstServiceWatch, pendingList, stalled, legacy, legacyContacted, legacyPending, legacyDaysLeft };
+  return { label, discoveryMeetings, kickstartMeetings, issued, avgTurnaround, signed, newClients, mrr, avgDaysToSign, conversion, closedWon, closedLost, conversionBase, awaitingKickstart, kickstartOverdue, avgKickstartWd, firstServiceWatch, pendingList, stalled, legacy, legacyContacted, legacyPending, legacyDaysLeft };
 }
 
 // ---------------------------------------------------------------------------
@@ -448,7 +458,7 @@ function kpiSection(k, periodName) {
     kpiRow(`Proposals issued (${periodName})`, `${k.issued.length}${k.avgTurnaround != null ? ` · avg ${k.avgTurnaround}d to send` : ""}`, tgt(T.proposalsIssuedPerMonth), T.proposalsIssuedPerMonth == null || k.issued.length >= T.proposalsIssuedPerMonth, k.issued.length >= (T.proposalsIssuedPerMonth || 0) * 0.6),
     kpiRow(`New clients signed (${periodName})`, String(k.newClients.length), tgt(T.newClientsPerMonth), T.newClientsPerMonth == null || k.newClients.length >= T.newClientsPerMonth, k.newClients.length >= (T.newClientsPerMonth || 0) * 0.6),
     kpiRow(`New recurring fees signed (${periodName})`, `${gbp(k.mrr)}/mo`, T.mrrSignedPerMonth == null ? "TBC" : `${gbp(T.mrrSignedPerMonth)}/mo`, T.mrrSignedPerMonth == null || k.mrr >= T.mrrSignedPerMonth, k.mrr >= (T.mrrSignedPerMonth || 0) * 0.6),
-    kpiRow("Proposal → signature conversion (90d)", k.conversion == null ? "n/a" : `${k.conversion}% (${k.closedWon}W / ${k.closedLost}L)`, `${T.conversionPct}%+`, k.conversion == null || k.conversion >= T.conversionPct, (k.conversion || 0) >= T.conversionPct - 10),
+    kpiRow(`Signed within ${T.conversionDays}d of sending (90d)`, k.conversion == null ? "n/a" : `${k.conversion}% (${k.closedWon} of ${k.conversionBase})`, `${T.conversionPct}%+`, k.conversion == null || k.conversion >= T.conversionPct, (k.conversion || 0) >= T.conversionPct - 15),
     kpiRow("Signature → kickstart", `${k.kickstartOverdue.length} overdue of ${k.awaitingKickstart.length}${k.avgKickstartWd != null ? ` · avg ${k.avgKickstartWd} wd` : ""}`, `≤ ${T.kickstartWorkingDays} working days`, k.kickstartOverdue.length === 0, k.kickstartOverdue.length <= 2),
     FIRST_SERVICE
       ? kpiRow("Kickstart → first service", `${FIRST_SERVICE.onTime}/${FIRST_SERVICE.kickstarted} on time · ${FIRST_SERVICE.overdue} overdue`, `≤ ${T.firstServiceDays} days`, FIRST_SERVICE.overdue === 0, FIRST_SERVICE.overdue <= 1)
@@ -510,7 +520,7 @@ async function buildWeeklyEmail() {
   const statsHtml =
     statCell("Signed last 7d", String(kw.signed.length), kw.signed.length ? C.green : C.amber) +
     statCell("MRR signed 7d", `${gbp(kw.mrr)}`, kw.mrr ? C.green : C.amber) +
-    statCell("Conversion 90d", kw.conversion == null ? "n/a" : `${kw.conversion}%`, kw.conversion == null ? C.navy : kw.conversion >= TARGETS.conversionPct ? C.green : C.amber) +
+    statCell(`Signed in ${TARGETS.conversionDays}d`, kw.conversion == null ? "n/a" : `${kw.conversion}%`, kw.conversion == null ? C.navy : kw.conversion >= TARGETS.conversionPct ? C.green : C.amber) +
     statCell("Kickstart overdue", String(kw.kickstartOverdue.length), kw.kickstartOverdue.length ? C.red : C.green);
 
   const bodyHtml =
@@ -546,7 +556,7 @@ async function buildMonthlyEmail() {
   const statsHtml =
     statCell("Signed", String(k.signed.length), C.navy) +
     statCell("MRR signed", gbp(k.mrr), C.green) +
-    statCell("Conversion 90d", k.conversion == null ? "n/a" : `${k.conversion}%`, k.conversion == null ? C.navy : k.conversion >= TARGETS.conversionPct ? C.green : C.amber) +
+    statCell(`Signed in ${TARGETS.conversionDays}d`, k.conversion == null ? "n/a" : `${k.conversion}%`, k.conversion == null ? C.navy : k.conversion >= TARGETS.conversionPct ? C.green : C.amber) +
     statCell("Active clients", String(sd.active.length), C.navy);
 
   const bodyHtml =
@@ -558,7 +568,7 @@ async function buildMonthlyEmail() {
     ]) +
     h3(`Legacy Client Bank — ${k.legacyContacted.length}/${LEGACY_CLIENTS.length} contacted`) + legacyTable(k.legacy) +
     h3("November gate review — evidence checklist") + ul([
-      `${k.conversion != null && k.conversion >= TARGETS.conversionPct ? "✓" : "⚠️"} Conversion ≥ ${TARGETS.conversionPct}% (${k.conversion == null ? "n/a" : k.conversion + "%"})`,
+      `${k.conversion != null && k.conversion >= TARGETS.conversionPct ? "✓" : "⚠️"} ${TARGETS.conversionPct}% signed within ${TARGETS.conversionDays} days (${k.conversion == null ? "n/a" : k.conversion + "%"})`,
       `${k.kickstartOverdue.length === 0 ? "✓" : "⚠️"} All kickstarts within ${TARGETS.kickstartWorkingDays} working days (${k.kickstartOverdue.length} overdue)`,
       `${k.legacyPending.length === 0 ? "✓" : "⚠️"} Legacy bank fully contacted (${k.legacyContacted.length}/${LEGACY_CLIENTS.length})`,
       `⏳ First-service delivery ≤ ${TARGETS.firstServiceDays}d — evidence from Karbon`,
