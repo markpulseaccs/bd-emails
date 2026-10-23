@@ -58,6 +58,10 @@ const STATUS_RANK = { pending: 0, contacted: 1, proposal_sent: 2, active: 3, dec
 let KICKSTARTS = {};
 // Kickstart -> first service, resolved by the dashboard from Karbon completions: { kickstarted, delivered, onTime, overdue, rows }
 let FIRST_SERVICE = null;
+// Pipeline status per proposal from the dashboard: { proposalId: { status|null, nextAction, nextActionDue, source } }. status null = not set by hand, so it is derived.
+let PIPELINE = {};
+// 14-day check-ins from the dashboard: { open: [{ id, name, owner, due, status, booked }], onTime, total }. null = the feed did not send them.
+let CHECKINS = null;
 // Client journey to-do from the dashboard's bd-todo feed: [{ id, name, owner, action }]. null = feed unavailable today.
 let TODO = null;
 let TODO_ERROR = null;
@@ -107,6 +111,8 @@ async function loadBdConfig() {
     }
     KICKSTARTS = cfg.kickstarts && typeof cfg.kickstarts === "object" ? cfg.kickstarts : {};
     FIRST_SERVICE = cfg.firstService && typeof cfg.firstService === "object" ? cfg.firstService : null;
+    PIPELINE = cfg.pipelineStatus && typeof cfg.pipelineStatus === "object" ? cfg.pipelineStatus : {};
+    CHECKINS = cfg.checkins && Array.isArray(cfg.checkins.open) ? cfg.checkins : null;
     if (cfg.socket && Array.isArray(cfg.socket.all) && cfg.socket.all.length) { SOCKET_SNAPSHOT = cfg.socket; console.log(`bd-config: socket snapshot ${cfg.socket.all.length} proposals as of ${cfg.socket.updatedAt || "?"}`); }
     console.log(`bd-config: ${LEGACY_CLIENTS.length} legacy clients, targets loaded, ${Object.keys(KICKSTARTS).length} kickstarts resolved`);
   } catch (err) { console.error("bd-config error:", err.message); }
@@ -183,6 +189,10 @@ function kpiRow(label, actual, target, ok, warn) {
   const mark = target === "TBC" ? "" : ok ? " ✓" : warn ? " ⚠️" : " ✗";
   return `<tr><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:13px; color:#374151;">${escapeHtml(label)}</td><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:13px; font-weight:700; color:${color}; text-align:right; white-space:nowrap;">${escapeHtml(actual)}${mark}</td><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:${C.grey}; text-align:right; white-space:nowrap;">${escapeHtml(target)}</td></tr>`;
 }
+// A KPI with no target: shown for information, no tick or cross.
+function kpiInfoRow(label, actual) {
+  return `<tr><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:13px; color:#374151;">${escapeHtml(label)}</td><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:13px; font-weight:700; color:${C.navy}; text-align:right; white-space:nowrap;">${escapeHtml(actual)}</td><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:${C.grey}; text-align:right; white-space:nowrap;">info only</td></tr>`;
+}
 function kpiTable(rows) {
   return `<table cellpadding="0" cellspacing="0" style="width:100%; margin:6px 0; border-collapse:collapse;"><tr><th style="text-align:left; padding:5px 8px; font-size:11px; color:${C.grey}; border-bottom:2px solid #e2e8f0;">KPI</th><th style="text-align:right; padding:5px 8px; font-size:11px; color:${C.grey}; border-bottom:2px solid #e2e8f0;">Actual</th><th style="text-align:right; padding:5px 8px; font-size:11px; color:${C.grey}; border-bottom:2px solid #e2e8f0;">Target</th></tr>${rows.join("")}</table>`;
 }
@@ -207,6 +217,10 @@ const clientName = p => {
 };
 const monthly = p => Number(p.monthly != null ? p.monthly : (p.recurringPrice || p.price || 0));
 const sentDate = p => p.lastSentAt || p.createdAt;
+// Same rule as the dashboard: set by hand, else not started up to 3 days after sending, then in progress. Dead = marked dead by hand.
+const pipelineStatus = p => { const row = PIPELINE[p.id]; if (row && row.status) return row.status; const d = sentDate(p); return !d || daysSince(d) <= 3 ? "not_started" : "in_progress"; };
+const isDead = p => pipelineStatus(p) === "dead";
+const leadSource = p => (PIPELINE[p.id] && PIPELINE[p.id].source) || "";
 
 // Socket dates arrive as ISO, "2026-09-24 11:33:34", or "24th September 2026"
 function parseSocketDate(v) {
@@ -312,8 +326,10 @@ function computeKpis(sd, events, periodStart, label) {
   const signed = sd.won.filter(p => inPeriod(signedAt(p)));
   const newClients = signed.filter(p => p.isNewClient);
   const mrr = signed.reduce((s, p) => s + monthly(p), 0);
+  const networking = signed.filter(p => leadSource(p).trim().toLowerCase() === "networking");
+  const networkingMrr = networking.reduce((s, p) => s + monthly(p), 0);
   const daysToSign = signed.filter(p => signedAt(p) && sentDate(p)).map(p => (new Date(signedAt(p)) - new Date(sentDate(p))) / DAY);
-  const signedList = signed.map(p => ({ name: clientName(p), owner: owner(p), sent: sentDate(p), signed: signedAt(p), days: sentDate(p) ? Math.round((new Date(signedAt(p)) - new Date(sentDate(p))) / DAY) : null, monthly: monthly(p), oneOff: Number(p.oneOff != null ? p.oneOff : (p.oneOffPrice || 0)), isNewClient: !!p.isNewClient })).sort((a, b) => String(b.signed).localeCompare(String(a.signed)));
+  const signedList = signed.map(p => ({ id: p.id, source: leadSource(p), name: clientName(p), owner: owner(p), sent: sentDate(p), signed: signedAt(p), days: sentDate(p) ? Math.round((new Date(signedAt(p)) - new Date(sentDate(p))) / DAY) : null, monthly: monthly(p), oneOff: Number(p.oneOff != null ? p.oneOff : (p.oneOffPrice || 0)), isNewClient: !!p.isNewClient })).sort((a, b) => String(b.signed).localeCompare(String(a.signed)));
   const avgDaysToSign = daysToSign.length ? Math.round(daysToSign.reduce((a, b) => a + b, 0) / daysToSign.length) : null;
 
   // 5. conversion (7 Oct 2026 definition): of new-business proposals sent in the last 90 days that have had
@@ -323,7 +339,7 @@ function computeKpis(sd, events, periodStart, label) {
   const matureBy = daysAgo(convDays);
   const isNB = p => p.isNewClient || !p.supersedes;
   const sentT = p => sentDate(p) ? new Date(sentDate(p)).getTime() : null;
-  const base = [...sd.won, ...sd.lost, ...sd.pending].filter(p => { const t = sentT(p); return isNB(p) && t != null && t >= window.getTime() && t <= matureBy.getTime(); });
+  const base = [...sd.won, ...sd.lost, ...sd.pending].filter(p => { const t = sentT(p); return isNB(p) && !isDead(p) && t != null && t >= window.getTime() && t <= matureBy.getTime(); });
   const quick = base.filter(p => { const sg = signedAt(p); return sg && new Date(sg).getTime() - sentT(p) <= convDays * DAY; });
   const closedWon = quick.length;
   const closedLost = base.length - quick.length;
@@ -361,7 +377,8 @@ function computeKpis(sd, events, periodStart, label) {
 
   // pending list
   const pendingList = sd.pending
-    .map(p => ({ name: clientName(p), owner: owner(p), days: daysSince(sentDate(p)), monthly: monthly(p), oneOff: Number(p.oneOff != null ? p.oneOff : (p.oneOffPrice || 0)), alignment: Number(p.alignment != null ? p.alignment : (p.alignmentFee || 0)) }))
+    .filter(p => !isDead(p))
+    .map(p => ({ id: p.id, status: pipelineStatus(p), nextAction: (PIPELINE[p.id] && PIPELINE[p.id].nextAction) || null, nextActionDue: (PIPELINE[p.id] && PIPELINE[p.id].nextActionDue) || null, source: leadSource(p), name: clientName(p), owner: owner(p), days: daysSince(sentDate(p)), monthly: monthly(p), oneOff: Number(p.oneOff != null ? p.oneOff : (p.oneOffPrice || 0)), alignment: Number(p.alignment != null ? p.alignment : (p.alignmentFee || 0)) }))
     .sort((a, b) => b.days - a.days);
   const stalled = pendingList.filter(p => p.days > 14);
 
@@ -371,7 +388,8 @@ function computeKpis(sd, events, periodStart, label) {
   const legacyPending = legacy.filter(c => c.status === "pending");
   const legacyDaysLeft = Math.ceil((new Date(TARGETS.legacyDeadline) - now()) / DAY);
 
-  return { label, discoveryMeetings, kickstartMeetings, issued, avgTurnaround, signed, newClients, mrr, avgDaysToSign, signedList, conversion, closedWon, closedLost, conversionBase, awaitingKickstart, kickstartOverdue, avgKickstartWd, firstServiceWatch, pendingList, stalled, legacy, legacyContacted, legacyPending, legacyDaysLeft };
+  const deadCount = sd.pending.filter(isDead).length;
+  return { label, discoveryMeetings, kickstartMeetings, issued, avgTurnaround, signed, newClients, mrr, networking, networkingMrr, deadCount, avgDaysToSign, signedList, conversion, closedWon, closedLost, conversionBase, awaitingKickstart, kickstartOverdue, avgKickstartWd, firstServiceWatch, pendingList, stalled, legacy, legacyContacted, legacyPending, legacyDaysLeft };
 }
 
 // ---------------------------------------------------------------------------
@@ -434,10 +452,11 @@ function calendarTable(events, showDay) {
 function signedTable(list) {
   if (!list.length) return muted("Nothing signed in this period.");
   return table(
-    [{ label: "Client" }, { label: "Type" }, { label: "Owner" }, { label: "Signed" }, { label: "Days", right: true }, { label: "Monthly", right: true }, { label: "One-off", right: true }],
+    [{ label: "Client" }, { label: "Type" }, { label: "Source" }, { label: "Owner" }, { label: "Signed" }, { label: "Days", right: true }, { label: "Monthly", right: true }, { label: "One-off", right: true }],
     list.map(r => [
       { text: r.name },
       { text: r.isNewClient ? "New" : "Existing", color: r.isNewClient ? C.navy : C.grey },
+      { text: r.source || "—", color: C.grey },
       { text: r.owner, color: C.grey },
       { text: fmtDate(r.signed), nowrap: true },
       { text: r.days == null ? "—" : String(r.days), bold: true, color: r.days != null && r.days <= TARGETS.conversionDays ? C.green : C.amber },
@@ -465,7 +484,7 @@ function pendingTable(list, cap) {
   if (!list.length) return muted("No pending proposals.");
   const shown = cap ? list.slice(0, cap) : list;
   const html = table(
-    [{ label: "Client" }, { label: "Owner" }, { label: "Value", right: true }, { label: "Age", right: true }],
+    [{ label: "Client" }, { label: "Owner" }, { label: "Status" }, { label: "Next action" }, { label: "Value", right: true }, { label: "Age", right: true }],
     shown.map(p => {
       const parts = [];
       if (p.monthly) parts.push(`${gbp(p.monthly)}/mo`);
@@ -474,6 +493,8 @@ function pendingTable(list, cap) {
       return [
         { text: p.name },
         { text: p.owner, color: C.grey },
+        { text: p.status === "not_started" ? "Not started" : "In progress", color: p.status === "not_started" ? C.navy : C.amber },
+        { text: p.nextAction ? `${p.nextAction}${p.nextActionDue ? ` (${fmtDate(p.nextActionDue)})` : ""}` : p.nextActionDue ? `Due ${fmtDate(p.nextActionDue)}` : "—", color: p.nextActionDue && p.nextActionDue <= new Date().toISOString().slice(0, 10) ? C.red : C.grey },
         { text: parts.join(" + ") || "—", nowrap: true },
         { text: `${p.days}d`, bold: true, color: p.days > 30 ? C.red : p.days > 14 ? C.amber : C.green },
       ];
@@ -495,8 +516,10 @@ function kpiSection(k, periodName) {
     kpiRow(`Proposals issued (${periodName})`, `${k.issued.length}${k.avgTurnaround != null ? ` · avg ${k.avgTurnaround}d to send` : ""}`, tgt(T.proposalsIssuedPerMonth), T.proposalsIssuedPerMonth == null || k.issued.length >= T.proposalsIssuedPerMonth, k.issued.length >= (T.proposalsIssuedPerMonth || 0) * 0.6),
     kpiRow(`New clients signed (${periodName})`, String(k.newClients.length), tgt(T.newClientsPerMonth), T.newClientsPerMonth == null || k.newClients.length >= T.newClientsPerMonth, k.newClients.length >= (T.newClientsPerMonth || 0) * 0.6),
     kpiRow(`New recurring fees signed (${periodName})`, `${gbp(k.mrr)}/mo`, T.mrrSignedPerMonth == null ? "TBC" : `${gbp(T.mrrSignedPerMonth)}/mo`, T.mrrSignedPerMonth == null || k.mrr >= T.mrrSignedPerMonth, k.mrr >= (T.mrrSignedPerMonth || 0) * 0.6),
+    kpiInfoRow(`Networking → signed (${periodName})`, `${k.networking.length} · ${gbp(k.networkingMrr)}/mo`),
     kpiRow(`Signed within ${T.conversionDays}d of sending (90d)`, k.conversion == null ? "n/a" : `${k.conversion}% (${k.closedWon} of ${k.conversionBase})`, `${T.conversionPct}%+`, k.conversion == null || k.conversion >= T.conversionPct, (k.conversion || 0) >= T.conversionPct - 15),
     kpiRow("Signature → kickstart", `${k.kickstartOverdue.length} overdue of ${k.awaitingKickstart.length}${k.avgKickstartWd != null ? ` · avg ${k.avgKickstartWd} wd` : ""}`, `≤ ${T.kickstartWorkingDays} working days`, k.kickstartOverdue.length === 0, k.kickstartOverdue.length <= 2),
+    ...(CHECKINS ? [kpiRow("14-day check-ins held on time (last 60d)", `${CHECKINS.onTime} of ${CHECKINS.total}`, "all on time", CHECKINS.onTime === CHECKINS.total, CHECKINS.onTime >= CHECKINS.total * 0.6)] : []),
     FIRST_SERVICE
       ? kpiRow("Kickstart → first service", `${FIRST_SERVICE.onTime}/${FIRST_SERVICE.kickstarted} on time · ${FIRST_SERVICE.overdue} overdue`, `≤ ${T.firstServiceDays} days`, FIRST_SERVICE.overdue === 0, FIRST_SERVICE.overdue <= 1)
       : kpiRow("Kickstart → first service", `${k.firstServiceWatch.length} in first ${T.firstServiceDays}d (track in Karbon)`, `≤ ${T.firstServiceDays} days`, true, true),
@@ -518,10 +541,18 @@ function actionsSection(k, todaysEvents) {
   if (k.kickstartOverdue.length) items.push(`<strong style="color:${C.red}">Book kickstart</strong> for ${names(k.kickstartOverdue)} — over ${TARGETS.kickstartWorkingDays} working days since signature, nothing in the diary`);
   const unbooked = k.awaitingKickstart.filter(x => !x.kickstart && x.wd <= TARGETS.kickstartWorkingDays);
   if (unbooked.length) items.push(`<strong>Book kickstart</strong> for ${names(unbooked)} — signed recently, not yet in the diary`);
-  const fresh = k.pendingList.filter(p => p.days >= 3 && p.days <= 14);
+  // Next actions set on the tracker that are due today or overdue come first, with what to do.
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const dueNow = k.pendingList.filter(p => p.nextActionDue && p.nextActionDue <= todayIso).sort((a, b) => a.nextActionDue.localeCompare(b.nextActionDue));
+  if (dueNow.length) items.push(`<strong style="color:${C.red}">Chase — next actions due</strong>: ${dueNow.map(p => `${escapeHtml(p.name)} — ${escapeHtml(p.nextAction || "follow up")} (due ${fmtDate(p.nextActionDue)}${p.nextActionDue < todayIso ? ", overdue" : ""})`).join("; ")}`);
+  const fresh = k.pendingList.filter(p => p.days >= 3 && p.days <= 14 && !dueNow.includes(p));
   if (fresh.length) items.push(`<strong>Chase</strong> ${names(fresh)} — proposal sent 3–14 days ago, follow up before it stalls`);
+  if (CHECKINS) {
+    const soon = CHECKINS.open.filter(c => new Date(c.due) - now() <= 2 * DAY).sort((a, b) => new Date(a.due) - new Date(b.due));
+    if (soon.length) items.push(`<strong>Check-in due:</strong> ${soon.map(c => `${escapeHtml(c.name)} (${c.status === "overdue" ? "overdue, was due " : "due "}${fmtDate(c.due)}${c.booked ? `, booked ${fmtDate(c.booked)}` : ""})`).join("; ")} — 14 days after signing`);
+  }
   if (FIRST_SERVICE && FIRST_SERVICE.overdue) items.push(`<strong style="color:${C.red}">First service overdue</strong> for ${FIRST_SERVICE.rows.filter(r => r.status === "overdue").map(r => escapeHtml(r.name)).join(", ")} — kickstarted over ${TARGETS.firstServiceDays} days ago, nothing completed in Karbon yet`);
-  if (k.stalled.length) items.push(`<strong>Close out</strong> ${k.stalled.length} stalled proposals (&gt;14d) — chase once more or mark declined/expired in Socket so the pipeline reflects live opportunities`);
+  if (k.stalled.length) items.push(`<strong>Close out</strong> ${k.stalled.length} stalled proposals (&gt;14d) — chase once more, then mark declined/expired in Socket or dead on the BD tracker so the pipeline reflects live opportunities`);
   if (k.legacyPending.length) items.push(`<strong>Legacy outreach</strong> — ${k.legacyPending.length} not yet contacted, ${k.legacyDaysLeft} days to ${fmtDate(TARGETS.legacyDeadline)}: ${names(k.legacyPending)}`);
   const kickToday = (todaysEvents || []).filter(e => /kick\s?-?start|discovery/i.test(e.subject || ""));
   if (kickToday.length) items.push(`<strong>Today's BD meetings:</strong> ${kickToday.map(e => escapeHtml(e.subject)).join("; ")} — book the kickstart live in the meeting, don't defer`);
@@ -550,7 +581,7 @@ async function buildDailyEmail() {
     h3("Today's Actions") + actionsSection(k, today) +
     h3(TODO ? `Client To-Do (${TODO.length}) — kickstarts, check-ins and first service` : "Client To-Do") + todoSection() +
     h3(`Awaiting Kickstart (${k.awaitingKickstart.length}) — signature → kickstart target ${TARGETS.kickstartWorkingDays} working days`) + kickstartTable(k.awaitingKickstart) +
-    h3(`Pending Proposals (${k.pendingList.length}) — oldest first`) + pendingTable(k.pendingList) +
+    h3(`Pending Proposals (${k.pendingList.length}) — ${k.pendingList.filter(p => p.status === "not_started").length} not started · ${k.pendingList.filter(p => p.status === "in_progress").length} in progress${k.deadCount ? ` · ${k.deadCount} dead (not listed)` : ""} — oldest first`) + pendingTable(k.pendingList) +
     h3("KPI Tracker — month to date") + kpiSection(k, "MTD");
 
   return { subject: `BD Daily — ${now().toLocaleDateString("en-GB")}`, html: buildEmailHtml({ title: "BD Daily Priorities", subtitle: now().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }), statsHtml, bodyHtml, footerNote: "Sources: Socket (proposals), Outlook (calendar). Generated automatically." }) };
@@ -651,7 +682,8 @@ async function sendEmail(subject, html, cc = []) {
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "POST only" });
   if (req.headers.authorization !== `Bearer ${CRON_SECRET}`) return res.status(401).json({ error: "Unauthorized" });
-  const { type } = req.body || {};
+  // noCc: true sends the weekly to Mark only (for test sends), skipping BD_WEEKLY_CC.
+  const { type, noCc } = req.body || {};
   try {
     // "auto": daily every day, plus weekly on Mondays and monthly on the 1st — one scheduler job covers all three
     let types = [type];
@@ -668,7 +700,7 @@ export default async function handler(req, res) {
     for (const t of types) {
       if (t === "monthly") await recordSnapshot(); // store last month's KPIs before reporting them
       const email = await builders[t]();
-      results[t] = await sendEmail(email.subject, email.html, t === "weekly" ? WEEKLY_CC : []);
+      results[t] = await sendEmail(email.subject, email.html, t === "weekly" && !noCc ? WEEKLY_CC : []);
     }
     const ok = Object.values(results).every(Boolean);
     return res.status(ok ? 200 : 500).json({ sent: ok, results });
