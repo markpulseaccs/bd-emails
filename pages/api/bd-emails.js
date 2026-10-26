@@ -62,6 +62,8 @@ let FIRST_SERVICE = null;
 let PIPELINE = {};
 // 14-day check-ins from the dashboard: { open: [{ id, name, owner, due, status, booked }], onTime, total }. null = the feed did not send them.
 let CHECKINS = null;
+// Month-on-month trend from the dashboard, already worked out: { heads: [{ key, label, live, final }], rows: [{ label, target, cells: [{ text, sub, tone }] }] }. null = not sent.
+let TREND = null;
 // Client journey to-do from the dashboard's bd-todo feed: [{ id, name, owner, action }]. null = feed unavailable today.
 let TODO = null;
 let TODO_ERROR = null;
@@ -113,6 +115,7 @@ async function loadBdConfig() {
     FIRST_SERVICE = cfg.firstService && typeof cfg.firstService === "object" ? cfg.firstService : null;
     PIPELINE = cfg.pipelineStatus && typeof cfg.pipelineStatus === "object" ? cfg.pipelineStatus : {};
     CHECKINS = cfg.checkins && Array.isArray(cfg.checkins.open) ? cfg.checkins : null;
+    TREND = cfg.trend && Array.isArray(cfg.trend.heads) && Array.isArray(cfg.trend.rows) ? cfg.trend : null;
     if (cfg.socket && Array.isArray(cfg.socket.all) && cfg.socket.all.length) { SOCKET_SNAPSHOT = cfg.socket; console.log(`bd-config: socket snapshot ${cfg.socket.all.length} proposals as of ${cfg.socket.updatedAt || "?"}`); }
     console.log(`bd-config: ${LEGACY_CLIENTS.length} legacy clients, targets loaded, ${Object.keys(KICKSTARTS).length} kickstarts resolved`);
   } catch (err) { console.error("bd-config error:", err.message); }
@@ -527,6 +530,18 @@ function kpiSection(k, periodName) {
   ];
   return kpiTable(rows);
 }
+// Month-on-month trend — the same table as the /bd page (the dashboard works out the cells and colours).
+const TREND_TONE = { green: "background:#ecfdf5; color:#065f46;", amber: "background:#fffbeb; color:#92400e;", red: "background:#fef2f2; color:#b91c1c;", none: "color:#374151;" };
+function trendSection() {
+  if (!TREND || !TREND.heads.length) return muted("Trend unavailable today — see the BD tracker.");
+  const th = (t, right) => `<th style="text-align:${right ? "right" : "left"}; padding:5px 6px; font-size:10px; color:${C.grey}; border-bottom:2px solid #e2e8f0; white-space:nowrap;">${escapeHtml(t)}</th>`;
+  const head = `<tr>${th("KPI")}${TREND.heads.map(h => th(h.label + (!h.live && !h.final ? " *" : ""), true)).join("")}${th("Target", true)}</tr>`;
+  const cell = c => `<td style="padding:5px 6px; border-bottom:1px solid #e2e8f0; font-size:12px; font-weight:700; text-align:right; white-space:nowrap; ${TREND_TONE[c.tone] || TREND_TONE.none}">${escapeHtml(c.text)}${c.sub ? `<div style="font-size:10px; font-weight:400; opacity:0.75;">${escapeHtml(c.sub)}</div>` : ""}</td>`;
+  const body = TREND.rows.map(r => `<tr><td style="padding:5px 6px; border-bottom:1px solid #e2e8f0; font-size:12px; color:#374151;">${escapeHtml(r.label)}</td>${r.cells.map(cell).join("")}<td style="padding:5px 6px; border-bottom:1px solid #e2e8f0; font-size:11px; color:${C.grey}; text-align:right; white-space:nowrap;">${escapeHtml(r.target)}</td></tr>`).join("");
+  const partial = TREND.heads.some(h => !h.live && !h.final);
+  return `<table cellpadding="0" cellspacing="0" style="width:100%; margin:6px 0; border-collapse:collapse;">${head}${body}</table>` + muted("Each month is coloured against the target in force when it was captured. Signed-within-14-days, kickstarts, first service and legacy are as at the capture date (— = not kept for a month rebuilt late)." + (partial ? " * = last month-so-far capture." : ""));
+}
+
 // Client to-do, grouped by owner so it can be handed straight to the team.
 function todoSection() {
   if (TODO === null) return muted(`To-do unavailable today (${escapeHtml(TODO_ERROR || "no response")}) — check the Client journey tab in pulse-dashboard before tasking anyone.`);
@@ -582,7 +597,8 @@ async function buildDailyEmail() {
     h3(TODO ? `Client To-Do (${TODO.length}) — kickstarts, check-ins and first service` : "Client To-Do") + todoSection() +
     h3(`Awaiting Kickstart (${k.awaitingKickstart.length}) — signature → kickstart target ${TARGETS.kickstartWorkingDays} working days`) + kickstartTable(k.awaitingKickstart) +
     h3(`Pending Proposals (${k.pendingList.length}) — ${k.pendingList.filter(p => p.status === "not_started").length} not started · ${k.pendingList.filter(p => p.status === "in_progress").length} in progress${k.deadCount ? ` · ${k.deadCount} dead (not listed)` : ""} — oldest first`) + pendingTable(k.pendingList) +
-    h3("KPI Tracker — month to date") + kpiSection(k, "MTD");
+    h3("KPI Tracker — month to date") + kpiSection(k, "MTD") +
+    h3("Trend — month on month") + trendSection();
 
   return { subject: `BD Daily — ${now().toLocaleDateString("en-GB")}`, html: buildEmailHtml({ title: "BD Daily Priorities", subtitle: now().toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }), statsHtml, bodyHtml, footerNote: "Sources: Socket (proposals), Outlook (calendar). Generated automatically." }) };
 }
@@ -612,6 +628,7 @@ async function buildWeeklyEmail() {
     h3(`This Week's Meetings (${week.length})`) + calendarTable(week, true) +
     h3(`Awaiting Kickstart (${km.awaitingKickstart.length})`) + kickstartTable(km.awaitingKickstart) +
     h3("KPI Tracker — month to date") + kpiSection(km, "MTD") +
+    h3("Trend — month on month") + trendSection() +
     h3(`Legacy Client Bank — ${km.legacyContacted.length}/${LEGACY_CLIENTS.length} contacted, ${km.legacyDaysLeft} days to ${fmtDate(TARGETS.legacyDeadline)}`) + legacyTable(km.legacy) +
     h3("Monday housekeeping") + ul([
       `<a href="https://pulse-dashboard-7zua.vercel.app/bd" style="color:${C.navy}; font-weight:700;">Open the BD tracker</a> — update legacy statuses and targets there, not in code`,
@@ -640,6 +657,7 @@ async function buildMonthlyEmail() {
 
   const bodyHtml =
     h3(`KPI Review — ${monthName}`) + kpiSection(k, "month") +
+    h3("Trend — month on month") + trendSection() +
     h3(`Signed in ${monthName} (${k.signedList.length}) — ${gbp(k.mrr)}/mo recurring`) + signedTable(k.signedList) +
     h3("Pipeline at month end") + ul([
       `Pending proposals: <strong>${k.pendingList.length}</strong> (${k.stalled.length} stalled &gt;14d)`,
