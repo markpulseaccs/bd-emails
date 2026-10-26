@@ -187,10 +187,11 @@ function table(headers, rows) {
   const tr = rows.map(r => `<tr>${r.map((c, i) => `<td style="padding:5px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:${c.color || "#374151"}; ${headers[i].right ? "text-align:right;" : ""} ${c.bold ? "font-weight:700;" : ""} ${c.nowrap ? "white-space:nowrap;" : ""}">${c.html ? c.html : escapeHtml(c.text)}</td>`).join("")}</tr>`).join("");
   return `<table cellpadding="0" cellspacing="0" style="width:100%; margin:6px 0; border-collapse:collapse;"><tr>${th}</tr>${tr}</table>`;
 }
-function kpiRow(label, actual, target, ok, warn) {
+// `anchor` (optional) links the label to that list on the BD tracker page.
+function kpiRow(label, actual, target, ok, warn, anchor) {
   const color = target === "TBC" ? C.navy : ragColor(ok, warn);
   const mark = target === "TBC" ? "" : ok ? " ✓" : warn ? " ⚠️" : " ✗";
-  return `<tr><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:13px; color:#374151;">${escapeHtml(label)}</td><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:13px; font-weight:700; color:${color}; text-align:right; white-space:nowrap;">${escapeHtml(actual)}${mark}</td><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:${C.grey}; text-align:right; white-space:nowrap;">${escapeHtml(target)}</td></tr>`;
+  return `<tr><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:13px; color:#374151;">${anchor ? `<a href="https://pulse-dashboard-7zua.vercel.app/bd#${anchor}" style="color:#374151;">${escapeHtml(label)}</a>` : escapeHtml(label)}</td><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:13px; font-weight:700; color:${color}; text-align:right; white-space:nowrap;">${escapeHtml(actual)}${mark}</td><td style="padding:6px 8px; border-bottom:1px solid #e2e8f0; font-size:12px; color:${C.grey}; text-align:right; white-space:nowrap;">${escapeHtml(target)}</td></tr>`;
 }
 // A KPI with no target: shown for information, no tick or cross.
 function kpiInfoRow(label, actual) {
@@ -520,9 +521,9 @@ function kpiSection(k, periodName) {
     kpiRow(`New clients signed (${periodName})`, String(k.newClients.length), tgt(T.newClientsPerMonth), T.newClientsPerMonth == null || k.newClients.length >= T.newClientsPerMonth, k.newClients.length >= (T.newClientsPerMonth || 0) * 0.6),
     kpiRow(`New recurring fees signed (${periodName})`, `${gbp(k.mrr)}/mo`, T.mrrSignedPerMonth == null ? "TBC" : `${gbp(T.mrrSignedPerMonth)}/mo`, T.mrrSignedPerMonth == null || k.mrr >= T.mrrSignedPerMonth, k.mrr >= (T.mrrSignedPerMonth || 0) * 0.6),
     kpiInfoRow(`Networking → signed (${periodName})`, `${k.networking.length} · ${gbp(k.networkingMrr)}/mo`),
-    kpiRow(`Signed within ${T.conversionDays}d of sending (90d)`, k.conversion == null ? "n/a" : `${k.conversion}% (${k.closedWon} of ${k.conversionBase})`, `${T.conversionPct}%+`, k.conversion == null || k.conversion >= T.conversionPct, (k.conversion || 0) >= T.conversionPct - 15),
-    kpiRow("Signature → kickstart", `${k.kickstartOverdue.length} overdue of ${k.awaitingKickstart.length}${k.avgKickstartWd != null ? ` · avg ${k.avgKickstartWd} wd` : ""}`, `≤ ${T.kickstartWorkingDays} working days`, k.kickstartOverdue.length === 0, k.kickstartOverdue.length <= 2),
-    ...(CHECKINS ? [kpiRow("14-day check-ins held on time (last 60d)", `${CHECKINS.onTime} of ${CHECKINS.total}`, "all on time", CHECKINS.onTime === CHECKINS.total, CHECKINS.onTime >= CHECKINS.total * 0.6)] : []),
+    kpiRow(`Signed within ${T.conversionDays}d of sending (90d)`, k.conversion == null ? "n/a" : `${k.conversion}% (${k.closedWon} of ${k.conversionBase})`, `${T.conversionPct}%+`, k.conversion == null || k.conversion >= T.conversionPct, (k.conversion || 0) >= T.conversionPct - 15, "not-signed"),
+    kpiRow("Signature → kickstart", `${k.kickstartOverdue.length} overdue of ${k.awaitingKickstart.length}${k.avgKickstartWd != null ? ` · avg ${k.avgKickstartWd} wd` : ""}`, `≤ ${T.kickstartWorkingDays} working days`, k.kickstartOverdue.length === 0, k.kickstartOverdue.length <= 2, "awaiting-kickstart"),
+    ...(CHECKINS ? [kpiRow("14-day check-ins held on time (last 60d)", `${CHECKINS.onTime} of ${CHECKINS.total}`, "all on time", CHECKINS.onTime === CHECKINS.total, CHECKINS.onTime >= CHECKINS.total * 0.6, "checkins")] : []),
     FIRST_SERVICE
       ? kpiRow("Kickstart → first service", `${FIRST_SERVICE.onTime}/${FIRST_SERVICE.kickstarted} on time · ${FIRST_SERVICE.overdue} overdue`, `≤ ${T.firstServiceDays} days`, FIRST_SERVICE.overdue === 0, FIRST_SERVICE.overdue <= 1)
       : kpiRow("Kickstart → first service", `${k.firstServiceWatch.length} in first ${T.firstServiceDays}d (track in Karbon)`, `≤ ${T.firstServiceDays} days`, true, true),
