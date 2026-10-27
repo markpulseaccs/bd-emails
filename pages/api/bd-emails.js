@@ -220,7 +220,8 @@ const clientName = p => {
   return (primary && primary.name) || p.title || "Unnamed";
 };
 const monthly = p => Number(p.monthly != null ? p.monthly : (p.recurringPrice || p.price || 0));
-const sentDate = p => p.lastSentAt || p.createdAt;
+// Socket gives no send date. A date set by hand on the BD tracker wins, then the date the dashboard saw it go from draft to sent (arrives as lastSentAt), then the created date.
+const sentDate = p => (PIPELINE[p.id] && PIPELINE[p.id].sentDate) || p.lastSentAt || p.createdAt;
 // Same rule as the dashboard: set by hand, else not started up to 3 days after sending, then in progress. Dead = marked dead by hand.
 const pipelineStatus = p => { const row = PIPELINE[p.id]; if (row && row.status) return row.status; const d = sentDate(p); return !d || daysSince(d) <= 3 ? "not_started" : "in_progress"; };
 const isDead = p => pipelineStatus(p) === "dead";
